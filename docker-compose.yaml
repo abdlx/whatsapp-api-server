@@ -7,6 +7,20 @@ services:
       - "3000:3000"
     environment:
       - NODE_ENV=production
+      - PORT=3000
+      - SUPABASE_URL=${SUPABASE_URL}
+      - SUPABASE_SERVICE_ROLE_KEY=${SUPABASE_SERVICE_ROLE_KEY}
+      - REDIS_URL=${REDIS_URL}
+      - API_KEY=${API_KEY}
+      - ALLOWED_IPS=${ALLOWED_IPS:-*}
+      - MAX_MESSAGES_PER_DAY=${MAX_MESSAGES_PER_DAY:-200}
+      - MIN_DELAY_MS=${MIN_DELAY_MS:-3000}
+      - MAX_DELAY_MS=${MAX_DELAY_MS:-8000}
+      - TYPING_SPEED_MS=${TYPING_SPEED_MS:-50}
+      - DEFAULT_TIMEZONE=${DEFAULT_TIMEZONE:-UTC}
+      - RESPECT_WEEKENDS=${RESPECT_WEEKENDS:-false}
+      - BLOCK_UNSAVED_CONTACTS=${BLOCK_UNSAVED_CONTACTS:-false}
+      - ALERT_WEBHOOK_URL=${ALERT_WEBHOOK_URL:-}
     volumes:
       # Named volume for persistent WhatsApp sessions in Coolify
       - whatsapp_sessions:/app/sessions
