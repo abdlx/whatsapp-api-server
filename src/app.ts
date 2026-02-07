@@ -16,12 +16,28 @@ const fastify = Fastify({
 });
 
 // Register middleware
-fastify.addHook('onRequest', authMiddleware);
-fastify.addHook('onRequest', ipWhitelistMiddleware);
-fastify.addHook('onRequest', globalRateLimiter);
+fastify.addHook('onRequest', async (request, reply) => {
+    // Skip auth and rate limiting for health check and root
+    if (request.url === '/health' || request.url === '/') {
+        return;
+    }
 
-// Health check endpoint (no auth required)
-fastify.get('/health', { preHandler: [] }, async (_request, reply) => {
+    await authMiddleware(request, reply);
+    await ipWhitelistMiddleware(request, reply);
+    await globalRateLimiter(request, reply);
+});
+
+// Root route for simple verification
+fastify.get('/', async () => {
+    return {
+        message: 'WhatsApp API Server is running',
+        version: '1.0.0',
+        documentation: 'https://github.com/abdlx/whatsapp-api-server'
+    };
+});
+
+// Health check endpoint
+fastify.get('/health', async (_request, reply) => {
     return reply.send({
         status: 'ok',
         uptime: process.uptime(),
@@ -29,6 +45,7 @@ fastify.get('/health', { preHandler: [] }, async (_request, reply) => {
         timestamp: new Date().toISOString(),
     });
 });
+
 
 // Register routes
 fastify.register(sessionRoutes);
