@@ -1,0 +1,24 @@
+version: '3.8'
+
+services:
+  app:
+    build: .
+    ports:
+      - "3000:3000"
+    environment:
+      - NODE_ENV=production
+    env_file:
+      - .env
+    volumes:
+      # Named volume for persistent WhatsApp sessions in Coolify
+      - whatsapp_sessions:/app/sessions
+    restart: unless-stopped
+    healthcheck:
+      # Adjust healthcheck to use your app's health endpoint
+      test: ["CMD", "wget", "-q", "--spider", "http://localhost:3000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+volumes:
+  whatsapp_sessions:
