@@ -32,6 +32,19 @@ services:
       retries: 3
       start_period: 20s
 
+  dashboard:
+    build:
+      context: ./dashboard
+      dockerfile: Dockerfile
+    environment:
+      - NODE_ENV=production
+      - PORT=3001
+    networks:
+      - coolify
+    restart: unless-stopped
+    ports:
+      - "3001:3001"
+
 networks:
   coolify:
     external: true
