@@ -315,12 +315,12 @@ export default function Dashboard() {
 
       {/* New Session Modal */}
       {showNewSession && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
-          <div className="absolute inset-0 bg-black/80 backdrop-blur-sm" onClick={() => setShowNewSession(false)} />
+        <div className="modal-container">
+          <div className="modal-backdrop" onClick={() => setShowNewSession(false)} />
           <motion.div
             initial={{ scale: 0.9, opacity: 0 }}
             animate={{ scale: 1, opacity: 1 }}
-            className="glass w-full max-w-md p-8 relative z-10"
+            className="glass modal-content"
           >
             <button className="absolute top-4 right-4 text-zinc-500 hover:text-white" onClick={() => setShowNewSession(false)}>
               <X size={24} />
@@ -375,12 +375,12 @@ export default function Dashboard() {
 
       {/* Message Modal */}
       {showMessageModal && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
-          <div className="absolute inset-0 bg-black/80 backdrop-blur-sm" onClick={() => setShowMessageModal(false)} />
+        <div className="modal-container">
+          <div className="modal-backdrop" onClick={() => setShowMessageModal(false)} />
           <motion.div
             initial={{ scale: 0.9, opacity: 0 }}
             animate={{ scale: 1, opacity: 1 }}
-            className="glass w-full max-w-md p-8 relative z-10"
+            className="glass modal-content"
           >
             <button className="absolute top-4 right-4 text-zinc-500 hover:text-white" onClick={() => setShowMessageModal(false)}>
               <X size={24} />
@@ -433,6 +433,7 @@ export default function Dashboard() {
         .flex { display: flex; }
         .flex-col { flex-direction: column; }
         .justify-between { justify-content: space-between; }
+        .justify-center { justify-content: center; }
         .items-center { align-items: center; }
         .items-start { align-items: flex-start; }
         .gap-4 { gap: 1rem; }
@@ -470,8 +471,42 @@ export default function Dashboard() {
         .inset-0 { top: 0; right: 0; bottom: 0; left: 0; }
         .z-50 { z-index: 50; }
         .absolute { position: absolute; }
-        .bg-black\/80 { background-color: rgba(0,0,0,0.8); }
-        .backdrop-blur-sm { backdrop-filter: blur(4px); }
+        
+        .modal-container {
+          position: fixed;
+          top: 0;
+          left: 0;
+          right: 0;
+          bottom: 0;
+          z-index: 100;
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          padding: 1rem;
+        }
+
+        .modal-backdrop {
+          position: absolute;
+          top: 0;
+          left: 0;
+          right: 0;
+          bottom: 0;
+          background-color: rgba(0, 0, 0, 0.7);
+          backdrop-filter: blur(4px);
+        }
+
+        .modal-content {
+          position: relative;
+          z-index: 101;
+          width: 100%;
+          max-width: 440px;
+          padding: 2rem;
+          background: rgba(18, 18, 18, 0.95);
+          border: 1px solid rgba(255, 255, 255, 0.1);
+          border-radius: 20px;
+          box-shadow: 0 20px 40px rgba(0, 0, 0, 0.4);
+        }
+
         .text-center { text-align: center; }
         .inline-block { display: inline-block; }
         .rounded-2xl { border-radius: 1rem; }
