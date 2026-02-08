@@ -18,7 +18,8 @@ const fastify = Fastify({
 // Register middleware
 fastify.addHook('onRequest', async (request, reply) => {
     // Skip auth and rate limiting for health check and root
-    if (request.url === '/health' || request.url === '/') {
+    const path = request.url.split('?')[0];
+    if (path === '/health' || path === '/' || path === '/health/') {
         return;
     }
 
@@ -30,6 +31,7 @@ fastify.addHook('onRequest', async (request, reply) => {
 // Root route for simple verification
 fastify.get('/', async () => {
     return {
+        status: 'ok',
         message: 'WhatsApp API Server is running',
         version: '1.0.0',
         documentation: 'https://github.com/abdlx/whatsapp-api-server'
@@ -90,8 +92,9 @@ async function start(): Promise<void> {
         healthMonitor.start();
 
         // Start HTTP server
-        await fastify.listen({ port: env.PORT, host: '0.0.0.0' });
-        logger.info({ port: env.PORT, env: env.NODE_ENV }, 'WhatsApp API Server started');
+        logger.info({ port: env.PORT, host: '0.0.0.0' }, 'Attempting to start HTTP server...');
+        const address = await fastify.listen({ port: env.PORT, host: '0.0.0.0' });
+        logger.info({ address, env: env.NODE_ENV }, 'WhatsApp API Server started and listening');
     } catch (err) {
         logger.error({ err }, 'Failed to start server');
         process.exit(1);
