@@ -31,14 +31,18 @@ interface Session {
 // --- Components ---
 
 const StatusBadge = ({ status }: { status: string }) => {
-  if (status === 'active' || status === 'open') {
+  const connectedStates = ['active', 'open', 'connected'];
+  const pairingStates = ['pairing', 'connecting'];
+
+  if (connectedStates.includes(status)) {
     return <span className="badge badge-success">Online</span>;
   }
-  if (status === 'pairing' || status === 'connecting') {
+  if (pairingStates.includes(status)) {
     return <span className="badge badge-warning">Pairing</span>;
   }
   return <span className="badge badge-error">Offline</span>;
 };
+
 
 export default function Dashboard() {
   const [sessions, setSessions] = useState<Session[]>([]);
@@ -300,7 +304,7 @@ export default function Dashboard() {
                       setActiveSessionId(session.id);
                       setShowMessageModal(true);
                     }}
-                    disabled={session.status !== 'active' && session.status !== 'open'}
+                    disabled={!['active', 'open', 'connected'].includes(session.status)}
                   >
                     <MessageSquare size={16} />
                     Test
