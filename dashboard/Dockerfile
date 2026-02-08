@@ -14,6 +14,9 @@ WORKDIR /app
 COPY --from=deps /app/node_modules ./node_modules
 COPY . .
 
+# Explicitly set NODE_ENV to production for the build
+# This overrides any build-time environment variables from Coolify
+ENV NODE_ENV=production
 RUN npm run build
 
 # Production image, copy all the files and run next
