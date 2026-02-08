@@ -53,6 +53,21 @@ fastify.get('/health', async (_request, reply) => {
 fastify.register(sessionRoutes);
 fastify.register(messageRoutes);
 
+// Custom 404 handler for debugging
+fastify.setNotFoundHandler((request, reply) => {
+    logger.warn({
+        url: request.url,
+        method: request.method,
+        headers: request.headers,
+    }, '404 Not Found - Route not matched');
+
+    return reply.status(404).send({
+        error: 'Not Found',
+        message: `Route ${request.method}:${request.url} not found on WhatsApp API Server`,
+        timestamp: new Date().toISOString(),
+    });
+});
+
 // Graceful shutdown handler
 async function gracefulShutdown(signal: string): Promise<void> {
     logger.info({ signal }, 'Received shutdown signal');
@@ -85,11 +100,21 @@ process.on('SIGINT', () => gracefulShutdown('SIGINT'));
 // Start server
 async function start(): Promise<void> {
     try {
+        logger.info('Initializing WhatsApp API Server...');
+
         // Restore existing sessions
         await sessionManager.restoreAllSessions();
+        logger.info('Sessions restored');
 
         // Start health monitor
         healthMonitor.start();
+
+        // Register routes (these are fastify.register calls)
+        logger.info('Registering routes...');
+
+        // Wait for all plugins/routes to be registered
+        await fastify.ready();
+        logger.info('Fastify ready (all plugins registered)');
 
         // Start HTTP server
         const port = env.PORT || 3000;
@@ -98,7 +123,11 @@ async function start(): Promise<void> {
         logger.info({ port, host }, 'Attempting to start HTTP server...');
 
         const address = await fastify.listen({ port, host });
-        logger.info({ address, env: env.NODE_ENV }, 'WhatsApp API Server started and listening');
+        logger.info({ address, env: env.NODE_ENV, port, host }, 'WhatsApp API Server started and listening');
+
+        // Print all registered routes for debugging
+        logger.info('Registered routes:');
+        console.log(fastify.printRoutes());
     } catch (err) {
         logger.error({ err }, 'Failed to start server');
         process.exit(1);

@@ -26,11 +26,11 @@ services:
       - coolify
     restart: unless-stopped
     healthcheck:
-      # Adjust healthcheck to use your app's health endpoint
-      test: ["CMD", "wget", "-q", "--spider", "http://localhost:3000/health"]
+      test: ["CMD", "curl", "-f", "http://localhost:3000/health"]
       interval: 30s
       timeout: 10s
       retries: 3
+      start_period: 20s
 
 networks:
   coolify:
