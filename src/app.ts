@@ -92,8 +92,12 @@ async function start(): Promise<void> {
         healthMonitor.start();
 
         // Start HTTP server
-        logger.info({ port: env.PORT, host: '0.0.0.0' }, 'Attempting to start HTTP server...');
-        const address = await fastify.listen({ port: env.PORT, host: '0.0.0.0' });
+        const port = env.PORT || 3000;
+        const host = '0.0.0.0'; // MUST be 0.0.0.0 for Docker/Coolify
+
+        logger.info({ port, host }, 'Attempting to start HTTP server...');
+
+        const address = await fastify.listen({ port, host });
         logger.info({ address, env: env.NODE_ENV }, 'WhatsApp API Server started and listening');
     } catch (err) {
         logger.error({ err }, 'Failed to start server');
