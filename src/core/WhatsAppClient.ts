@@ -50,9 +50,13 @@ export class WhatsAppClient {
 
             if (connection === 'open') {
                 this.connectionState = 'open';
-                await this.updateSessionStatus('active');
+
+                // Get the connected phone number from the socket
+                const phoneNumber = this.socket?.user?.id?.split(':')[0] || null;
+
+                await this.updateSessionStatus('active', phoneNumber);
                 await this.backupAuthState();
-                logger.info({ sessionId: this.sessionId }, 'WhatsApp connected');
+                logger.info({ sessionId: this.sessionId, phoneNumber }, 'WhatsApp connected');
             }
 
             if (connection === 'close') {
@@ -281,13 +285,14 @@ export class WhatsAppClient {
         return data.daily_message_count;
     }
 
-    private async updateSessionStatus(status: string): Promise<void> {
+    private async updateSessionStatus(status: string, phoneNumber?: string | null): Promise<void> {
         await supabase
             .from('sessions')
             .update({
                 status,
                 last_active: new Date().toISOString(),
                 ...(status === 'active' ? { connected_at: new Date().toISOString() } : {}),
+                ...(phoneNumber ? { phone_number: phoneNumber } : {}),
             })
             .eq('id', this.sessionId);
     }

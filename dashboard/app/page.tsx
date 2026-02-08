@@ -68,6 +68,14 @@ export default function Dashboard() {
   const [message, setMessage] = useState('');
   const [sendLoading, setSendLoading] = useState(false);
 
+  // Toast notification
+  const [toast, setToast] = useState<{ message: string; type: 'success' | 'error' } | null>(null);
+
+  const showToast = (message: string, type: 'success' | 'error') => {
+    setToast({ message, type });
+    setTimeout(() => setToast(null), 4000);
+  };
+
   // --- API Methods ---
 
   const getHeaders = useCallback(() => ({
@@ -153,17 +161,21 @@ export default function Dashboard() {
     e.preventDefault();
     setSendLoading(true);
     try {
-      await axios.post(`${apiUrl}/message/send`, {
+      const response = await axios.post(`${apiUrl}/message/send`, {
         sessionId: activeSessionId,
         recipient,
         message
       }, { headers: getHeaders() });
-      alert('Message queued successfully!');
+
+      showToast(`Message queued! ID: ${response.data.messageId?.slice(0, 8)}... Delivery: 5-30 seconds`, 'success');
       setShowMessageModal(false);
       setMessage('');
       setRecipient('');
+
+      // Refresh sessions to update message count
+      setTimeout(() => fetchSessions(), 3000);
     } catch (err: any) {
-      alert(err.response?.data?.message || 'Error sending message');
+      showToast(err.response?.data?.message || 'Error sending message', 'error');
     } finally {
       setSendLoading(false);
     }
@@ -428,6 +440,34 @@ export default function Dashboard() {
           </motion.div>
         </div>
       )}
+
+      {/* Toast Notification */}
+      <AnimatePresence>
+        {toast && (
+          <motion.div
+            initial={{ opacity: 0, y: 50, x: '-50%' }}
+            animate={{ opacity: 1, y: 0, x: '-50%' }}
+            exit={{ opacity: 0, y: 50, x: '-50%' }}
+            style={{
+              position: 'fixed',
+              bottom: '2rem',
+              left: '50%',
+              transform: 'translateX(-50%)',
+              padding: '1rem 2rem',
+              borderRadius: '1rem',
+              backgroundColor: toast.type === 'success' ? 'rgba(16, 185, 129, 0.95)' : 'rgba(239, 68, 68, 0.95)',
+              color: toast.type === 'success' ? '#000' : '#fff',
+              fontWeight: 500,
+              boxShadow: '0 10px 40px rgba(0, 0, 0, 0.3)',
+              zIndex: 1000,
+              maxWidth: '90vw',
+              textAlign: 'center'
+            }}
+          >
+            {toast.message}
+          </motion.div>
+        )}
+      </AnimatePresence>
 
       {/* Footer */}
       <footer className="mt-24 text-center text-zinc-600 text-sm animate-in">
