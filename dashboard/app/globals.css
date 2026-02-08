@@ -22,12 +22,170 @@ body {
   color: var(--foreground);
   font-family: 'Outfit', sans-serif;
   min-height: 100vh;
-  background-image: 
+  background-image:
     radial-gradient(circle at 10% 20%, rgba(16, 185, 129, 0.05) 0%, transparent 40%),
     radial-gradient(circle at 90% 80%, rgba(99, 102, 241, 0.05) 0%, transparent 40%);
   overflow-x: hidden;
 }
 
+/* Layout Utilities */
+.container {
+  width: 100%;
+  margin: 0 auto;
+  max-width: 1200px;
+  padding: 0 1rem;
+}
+
+.flex {
+  display: flex;
+}
+
+.flex-col {
+  flex-direction: column;
+}
+
+.items-center {
+  align-items: center;
+}
+
+.items-start {
+  align-items: flex-start;
+}
+
+.justify-center {
+  justify-content: center;
+}
+
+.justify-between {
+  justify-content: space-between;
+}
+
+.grid {
+  display: grid;
+}
+
+.gap-2 {
+  gap: 0.5rem;
+}
+
+.gap-3 {
+  gap: 0.75rem;
+}
+
+.gap-4 {
+  gap: 1rem;
+}
+
+.gap-6 {
+  gap: 1.5rem;
+}
+
+.mb-2 {
+  margin-bottom: 0.5rem;
+}
+
+.mb-4 {
+  margin-bottom: 1rem;
+}
+
+.mb-6 {
+  margin-bottom: 1.5rem;
+}
+
+.mb-8 {
+  margin-bottom: 2rem;
+}
+
+.mb-12 {
+  margin-bottom: 3rem;
+}
+
+.mt-4 {
+  margin-top: 1rem;
+}
+
+.mt-6 {
+  margin-top: 1.5rem;
+}
+
+.mt-24 {
+  margin-top: 6rem;
+}
+
+.py-12 {
+  padding-top: 3rem;
+  padding-bottom: 3rem;
+}
+
+.py-24 {
+  padding-top: 6rem;
+  padding-bottom: 6rem;
+}
+
+.p-4 {
+  padding: 1rem;
+}
+
+.p-6 {
+  padding: 1.5rem;
+}
+
+.p-8 {
+  padding: 2rem;
+}
+
+.p-12 {
+  padding: 3rem;
+}
+
+.w-full {
+  width: 100%;
+}
+
+.max-w-md {
+  max-width: 28rem;
+}
+
+.text-center {
+  text-align: center;
+}
+
+.relative {
+  position: relative;
+}
+
+.absolute {
+  position: absolute;
+}
+
+.fixed {
+  position: fixed;
+}
+
+.inset-0 {
+  top: 0;
+  right: 0;
+  bottom: 0;
+  left: 0;
+}
+
+.z-50 {
+  z-index: 50;
+}
+
+@media (min-width: 768px) {
+  .md\:grid-cols-2 {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@media (min-width: 1024px) {
+  .lg\:grid-cols-3 {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+}
+
+/* UI Components */
 .glass {
   background: var(--card-bg);
   backdrop-filter: blur(12px);
@@ -47,6 +205,7 @@ body {
   align-items: center;
   gap: 8px;
   font-family: inherit;
+  font-size: 0.875rem;
 }
 
 .btn-primary {
@@ -87,8 +246,8 @@ body {
 .badge {
   padding: 4px 8px;
   border-radius: 6px;
-  font-size: 12px;
-  font-weight: 600;
+  font-size: 10px;
+  font-weight: 700;
   text-transform: uppercase;
 }
 
@@ -107,15 +266,121 @@ body {
   color: #ef4444;
 }
 
-h1, h2, h3 {
+/* Typography */
+h1 {
+  font-size: 2.5rem;
+  font-weight: 700;
+  letter-spacing: -0.03em;
+}
+
+h2 {
+  font-size: 1.5rem;
+  font-weight: 600;
   letter-spacing: -0.02em;
 }
 
+h3 {
+  font-size: 1.25rem;
+  font-weight: 600;
+}
+
+.text-sm {
+  font-size: 0.875rem;
+}
+
+.text-xs {
+  font-size: 0.75rem;
+}
+
+.text-zinc-300 {
+  color: #d4d4d8;
+}
+
+.text-zinc-400 {
+  color: #a1a1aa;
+}
+
+.text-zinc-500 {
+  color: #71717a;
+}
+
+.text-emerald-400 {
+  color: #34d399;
+}
+
+.text-red-400 {
+  color: #f87171;
+}
+
+.bg-clip-text {
+  -webkit-background-clip: text;
+  background-clip: text;
+}
+
+.text-transparent {
+  color: transparent;
+}
+
+.bg-gradient-to-r {
+  background-image: linear-gradient(to right, #34d399, #22d3ee);
+}
+
+/* Animation */
 @keyframes fadeIn {
-  from { opacity: 0; transform: translateY(10px); }
-  to { opacity: 1; transform: translateY(0); }
+  from {
+    opacity: 0;
+    transform: translateY(10px);
+  }
+
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
 }
 
 .animate-in {
   animation: fadeIn 0.5s ease-out forwards;
+}
+
+.animate-spin {
+  animation: spin 1s linear infinite;
+}
+
+@keyframes spin {
+  from {
+    transform: rotate(0deg);
+  }
+
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+/* Modal */
+.modal-container {
+  position: fixed;
+  inset: 0;
+  z-index: 100;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 1rem;
+}
+
+.modal-backdrop {
+  position: absolute;
+  inset: 0;
+  background-color: rgba(0, 0, 0, 0.8);
+  backdrop-filter: blur(8px);
+}
+
+.modal-content {
+  position: relative;
+  z-index: 101;
+  width: 100%;
+  max-width: 440px;
+  background: #121212;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 20px;
+  box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.5);
 }

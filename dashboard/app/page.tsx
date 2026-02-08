@@ -2,7 +2,6 @@
 
 import React, { useState, useEffect, useCallback } from 'react';
 import axios from 'axios';
-import { QRCodeSVG } from 'qrcode.react';
 import {
   Plus,
   Trash2,
@@ -10,10 +9,8 @@ import {
   MessageSquare,
   Settings,
   Smartphone,
-  Power,
   CheckCircle2,
   AlertCircle,
-  QrCode,
   X,
   Send,
   Loader2
@@ -81,7 +78,8 @@ export default function Dashboard() {
       setSessions(response.data.sessions || []);
       setError(null);
     } catch (err: any) {
-      setError(err.response?.data?.message || 'Failed to fetch sessions. Check API URL and Key.');
+      const msg = err.response?.data?.message || 'Failed to fetch sessions. Check API URL and Key.';
+      setError(msg);
     } finally {
       setLoading(false);
     }
@@ -89,10 +87,12 @@ export default function Dashboard() {
 
   useEffect(() => {
     // Load config from localStorage
-    const savedUrl = localStorage.getItem('wapi_url');
-    const savedKey = localStorage.getItem('wapi_key');
-    if (savedUrl) setApiUrl(savedUrl);
-    if (savedKey) setApiKey(savedKey);
+    if (typeof window !== 'undefined') {
+      const savedUrl = localStorage.getItem('wapi_url');
+      const savedKey = localStorage.getItem('wapi_key');
+      if (savedUrl) setApiUrl(savedUrl);
+      if (savedKey) setApiKey(savedKey);
+    }
   }, []);
 
   useEffect(() => {
@@ -110,12 +110,11 @@ export default function Dashboard() {
     e.preventDefault();
     setQrLoading(true);
     try {
-      const resp = await axios.post(`${apiUrl}/session/create`, {
+      await axios.post(`${apiUrl}/session/create`, {
         agentId: newAgentId,
         agentName: newAgentName
       }, { headers: getHeaders() });
 
-      // If we directly get a QR or wait for it
       pollQR(newAgentId);
     } catch (err: any) {
       alert(err.response?.data?.message || 'Error creating session');
@@ -127,14 +126,11 @@ export default function Dashboard() {
     setQrLoading(true);
     try {
       const resp = await axios.get(`${apiUrl}/session/${id}/qr`, { headers: getHeaders() });
-      // The API returns { qr: "data:image/png;base64,..." } or similar
-      // But Baileys QR is usually a raw string. 
-      // Based on our route: it returns { qr: qrDataUrl }
       setQrCode(resp.data.qr);
-    } catch (err) {
-      setTimeout(() => pollQR(id), 2000);
-    } finally {
       setQrLoading(false);
+    } catch (err) {
+      // Keep polling until QR is available
+      setTimeout(() => pollQR(id), 2000);
     }
   };
 
@@ -169,11 +165,11 @@ export default function Dashboard() {
   };
 
   return (
-    <div className="container mx-auto px-4 py-12 max-w-6xl">
+    <div className="container py-12">
       {/* Header */}
-      <header className="flex justify-between items-center mb-12 animate-in" style={{ animationDelay: '0.1s' }}>
+      <header className="flex justify-between items-center mb-12 animate-in">
         <div>
-          <h1 className="text-4xl font-bold bg-clip-text text-transparent bg-gradient-to-r from-emerald-400 to-cyan-400 mb-2">
+          <h1 className="bg-clip-text text-transparent bg-gradient-to-r mb-2">
             WhatsApp API Dashboard
           </h1>
           <p className="text-zinc-400">Manage your unofficial WhatsApp automation</p>
@@ -197,20 +193,21 @@ export default function Dashboard() {
             initial={{ height: 0, opacity: 0 }}
             animate={{ height: 'auto', opacity: 1 }}
             exit={{ height: 0, opacity: 0 }}
-            className="glass p-6 mb-8 overflow-hidden"
+            className="glass p-6 mb-8"
+            style={{ overflow: 'hidden' }}
           >
-            <h2 className="text-xl font-semibold mb-6 flex items-center gap-2">
+            <h2 className="mb-6 flex items-center gap-2">
               <Settings size={20} className="text-emerald-400" />
               API Settings
             </h2>
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+            <div className="grid md:grid-cols-2 gap-6">
               <div>
                 <label className="block text-sm font-medium mb-2">Server URL</label>
                 <input
                   className="input"
                   value={apiUrl}
                   onChange={(e) => setApiUrl(e.target.value)}
-                  placeholder="http://wapi.idkwihl.space"
+                  placeholder="https://wapi.example.com"
                 />
               </div>
               <div>
@@ -220,7 +217,7 @@ export default function Dashboard() {
                   className="input"
                   value={apiKey}
                   onChange={(e) => setApiKey(e.target.value)}
-                  placeholder="Your super secret key"
+                  placeholder="Your secret key"
                 />
               </div>
             </div>
@@ -233,12 +230,19 @@ export default function Dashboard() {
 
       {/* Main Content */}
       <main>
+        {error && (
+          <div className="glass p-4 mb-8 border-red-400/20 bg-red-400/5 flex items-center gap-3">
+            <AlertCircle size={20} className="text-red-400" />
+            <span className="text-sm text-red-400">{error}</span>
+          </div>
+        )}
+
         {!apiKey ? (
-          <div className="glass p-12 text-center animate-in" style={{ animationDelay: '0.2s' }}>
+          <div className="glass p-12 text-center animate-in">
             <AlertCircle size={48} className="mx-auto mb-4 text-emerald-400" />
-            <h2 className="text-2xl font-semibold mb-2">Setup Required</h2>
+            <h2 className="mb-2">Setup Required</h2>
             <p className="text-zinc-400 mb-6">Please enter your API Key in the Config section to start managing sessions.</p>
-            <button className="btn btn-primary mx-auto" onClick={() => setShowConfig(true)}>Open Config</button>
+            <button className="btn btn-primary" style={{ margin: '0 auto' }} onClick={() => setShowConfig(true)}>Open Config</button>
           </div>
         ) : loading ? (
           <div className="flex flex-col items-center justify-center py-24 gap-4 animate-in">
@@ -246,24 +250,23 @@ export default function Dashboard() {
             <p className="text-zinc-400">Fetching sessions...</p>
           </div>
         ) : sessions.length === 0 ? (
-          <div className="glass p-12 text-center animate-in" style={{ animationDelay: '0.2s' }}>
-            <Smartphone size={48} className="mx-auto mb-4 text-emerald-400 opacity-20" />
-            <h2 className="text-2xl font-semibold mb-2">No Active Sessions</h2>
+          <div className="glass p-12 text-center animate-in">
+            <Smartphone size={48} className="mx-auto mb-4 text-emerald-400" style={{ opacity: 0.2 }} />
+            <h2 className="mb-2">No Active Sessions</h2>
             <p className="text-zinc-400 mb-6">Create your first session to link your WhatsApp account.</p>
-            <button className="btn btn-primary mx-auto" onClick={() => setShowNewSession(true)}>
+            <button className="btn btn-primary" style={{ margin: '0 auto' }} onClick={() => setShowNewSession(true)}>
               <Plus size={20} />
               Setup First Agent
             </button>
           </div>
         ) : (
-          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-            {sessions.map((session, idx) => (
+          <div className="grid md:grid-cols-2 lg:grid-cols-3 gap-6">
+            {sessions.map((session) => (
               <motion.div
                 key={session.id}
                 initial={{ opacity: 0, y: 20 }}
                 animate={{ opacity: 1, y: 0 }}
-                transition={{ delay: idx * 0.1 }}
-                className="glass p-6 group hover:border-emerald-500/50 transition-colors"
+                className="glass p-6 flex flex-col"
               >
                 <div className="flex justify-between items-start mb-4">
                   <div>
@@ -273,7 +276,7 @@ export default function Dashboard() {
                   <StatusBadge status={session.status} />
                 </div>
 
-                <div className="space-y-3 mb-6">
+                <div className="flex-col gap-3 mb-6" style={{ display: 'flex', flex: 1 }}>
                   <div className="flex items-center gap-2 text-sm text-zinc-400">
                     <Smartphone size={16} />
                     <span>{session.phone_number || 'Not linked'}</span>
@@ -290,7 +293,8 @@ export default function Dashboard() {
 
                 <div className="flex gap-2">
                   <button
-                    className="btn btn-outline flex-1 text-sm py-2"
+                    className="btn btn-outline"
+                    style={{ flex: 1 }}
                     onClick={() => {
                       setActiveSessionId(session.id);
                       setShowMessageModal(true);
@@ -301,7 +305,8 @@ export default function Dashboard() {
                     Test
                   </button>
                   <button
-                    className="btn btn-outline text-red-400 border-red-400/20 hover:bg-red-400/10 py-2 px-3"
+                    className="btn btn-outline"
+                    style={{ color: '#f87171', borderColor: 'rgba(248, 113, 113, 0.2)' }}
                     onClick={() => deleteSession(session.id)}
                   >
                     <Trash2 size={16} />
@@ -320,18 +325,18 @@ export default function Dashboard() {
           <motion.div
             initial={{ scale: 0.9, opacity: 0 }}
             animate={{ scale: 1, opacity: 1 }}
-            className="glass modal-content"
+            className="modal-content p-8"
           >
-            <button className="absolute top-4 right-4 text-zinc-500 hover:text-white" onClick={() => setShowNewSession(false)}>
+            <button className="absolute" style={{ top: '1rem', right: '1rem', background: 'none', border: 'none', cursor: 'pointer', color: '#71717a' }} onClick={() => setShowNewSession(false)}>
               <X size={24} />
             </button>
 
-            <h2 className="text-2xl font-bold mb-6">Create New Agent</h2>
+            <h2 className="mb-6 text-center">Create New Agent</h2>
 
             {!qrCode ? (
-              <form onSubmit={createSession} className="space-y-4">
+              <form onSubmit={createSession} className="flex flex-col gap-4">
                 <div>
-                  <label className="block text-sm font-medium mb-2">Agent ID (slug)</label>
+                  <label className="block text-sm font-medium mb-2 text-zinc-300">Agent ID (slug)</label>
                   <input
                     className="input"
                     value={newAgentId}
@@ -341,7 +346,7 @@ export default function Dashboard() {
                   />
                 </div>
                 <div>
-                  <label className="block text-sm font-medium mb-2">Display Name</label>
+                  <label className="block text-sm font-medium mb-2 text-zinc-300">Display Name</label>
                   <input
                     className="input"
                     value={newAgentName}
@@ -350,16 +355,16 @@ export default function Dashboard() {
                     required
                   />
                 </div>
-                <button className="btn btn-primary w-full mt-4 h-12" disabled={qrLoading}>
+                <button className="btn btn-primary w-full mt-4" style={{ height: '3rem' }} disabled={qrLoading}>
                   {qrLoading ? <RefreshCw className="animate-spin" /> : 'Generate QR Code'}
                 </button>
               </form>
             ) : (
-              <div className="text-center py-4">
-                <div className="bg-white p-4 rounded-2xl inline-block mb-6 shadow-2xl shadow-emerald-500/20">
-                  <img src={qrCode} alt="WhatsApp QR" className="w-64 h-64" />
+              <div className="text-center">
+                <div className="bg-white p-4 rounded-2xl" style={{ display: 'inline-block', marginBottom: '1.5rem' }}>
+                  <img src={qrCode} alt="WhatsApp QR" style={{ width: '256px', height: '256px' }} />
                 </div>
-                <p className="text-zinc-400 text-sm mb-6">Scan this QR code with your WhatsApp app<br />(Linked Devices -{">"} Link a Device)</p>
+                <p className="text-zinc-400 text-sm mb-6">Scan this QR code with your WhatsApp app</p>
                 <button className="btn btn-primary w-full" onClick={() => {
                   setShowNewSession(false);
                   setQrCode(null);
@@ -380,18 +385,18 @@ export default function Dashboard() {
           <motion.div
             initial={{ scale: 0.9, opacity: 0 }}
             animate={{ scale: 1, opacity: 1 }}
-            className="glass modal-content"
+            className="modal-content p-8"
           >
-            <button className="absolute top-4 right-4 text-zinc-500 hover:text-white" onClick={() => setShowMessageModal(false)}>
+            <button className="absolute" style={{ top: '1rem', right: '1rem', background: 'none', border: 'none', cursor: 'pointer', color: '#71717a' }} onClick={() => setShowMessageModal(false)}>
               <X size={24} />
             </button>
-            <h2 className="text-2xl font-bold mb-6 flex items-center gap-2">
+            <h2 className="mb-6 flex items-center gap-2 justify-center">
               <Send size={24} className="text-emerald-400" />
               Test Message
             </h2>
-            <form onSubmit={sendMessage} className="space-y-4">
+            <form onSubmit={sendMessage} className="flex flex-col gap-4">
               <div>
-                <label className="block text-sm font-medium mb-2">Recipient Number</label>
+                <label className="block text-sm font-medium mb-2 text-zinc-300">Recipient Number</label>
                 <input
                   className="input"
                   value={recipient}
@@ -401,16 +406,17 @@ export default function Dashboard() {
                 />
               </div>
               <div>
-                <label className="block text-sm font-medium mb-2">Message</label>
+                <label className="block text-sm font-medium mb-2 text-zinc-300">Message</label>
                 <textarea
-                  className="input h-32 resize-none"
+                  className="input"
+                  style={{ height: '8rem', resize: 'none' }}
                   value={message}
                   onChange={(e) => setMessage(e.target.value)}
                   placeholder="Type your test message here..."
                   required
                 />
               </div>
-              <button className="btn btn-primary w-full mt-4 h-12" disabled={sendLoading}>
+              <button className="btn btn-primary w-full mt-4" style={{ height: '3rem' }} disabled={sendLoading}>
                 {sendLoading ? <RefreshCw className="animate-spin" /> : 'Send Message'}
               </button>
             </form>
@@ -419,118 +425,9 @@ export default function Dashboard() {
       )}
 
       {/* Footer */}
-      <footer className="mt-24 text-center text-zinc-600 text-sm animate-in" style={{ animationDelay: '0.4s' }}>
+      <footer className="mt-24 text-center text-zinc-600 text-sm animate-in">
         <p>&copy; 2026 WhatsApp API Gateway Dashboard. For internal testing only.</p>
       </footer>
-
-      {/* Add responsive styles / Tailwind equivalents manually or using CSS */}
-      <style jsx>{`
-        .container { width: 100%; margin: 0 auto; }
-        .mx-auto { margin-left: auto; margin-right: auto; }
-        .px-4 { padding-left: 1rem; padding-right: 1rem; }
-        .py-12 { padding-top: 3rem; padding-bottom: 3rem; }
-        .max-w-6xl { max-width: 72rem; }
-        .flex { display: flex; }
-        .flex-col { flex-direction: column; }
-        .justify-between { justify-content: space-between; }
-        .justify-center { justify-content: center; }
-        .items-center { align-items: center; }
-        .items-start { align-items: flex-start; }
-        .gap-4 { gap: 1rem; }
-        .gap-2 { gap: 0.5rem; }
-        .mb-12 { margin-bottom: 3rem; }
-        .mb-8 { margin-bottom: 2rem; }
-        .mb-6 { margin-bottom: 1.5rem; }
-        .mb-4 { margin-bottom: 1rem; }
-        .mb-2 { margin-bottom: 0.5rem; }
-        .mt-6 { margin-top: 1.5rem; }
-        .mt-4 { margin-top: 1rem; }
-        .mt-24 { margin-top: 6rem; }
-        .grid { display: grid; }
-        .grid-cols-1 { grid-template-columns: repeat(1, minmax(0, 1fr)); }
-        .text-4xl { font-size: 2.25rem; line-height: 2.5rem; }
-        .text-2xl { font-size: 1.5rem; line-height: 2rem; }
-        .text-xl { font-size: 1.25rem; line-height: 1.75rem; }
-        .text-lg { font-size: 1.125rem; line-height: 1.75rem; }
-        .text-sm { font-size: 0.875rem; line-height: 1.25rem; }
-        .text-xs { font-size: 0.75rem; line-height: 1rem; }
-        .font-bold { font-weight: 700; }
-        .font-semibold { font-weight: 600; }
-        .font-medium { font-weight: 500; }
-        .text-zinc-400 { color: #a1a1aa; }
-        .text-zinc-500 { color: #71717a; }
-        .text-zinc-600 { color: #52525b; }
-        .text-emerald-400 { color: #34d399; }
-        .text-cyan-400 { color: #22d3ee; }
-        .w-full { width: 100%; }
-        .max-w-md { max-width: 28rem; }
-        .h-12 { height: 3rem; }
-        .h-32 { height: 8rem; }
-        .resize-none { resize: none; }
-        .fixed { position: fixed; }
-        .inset-0 { top: 0; right: 0; bottom: 0; left: 0; }
-        .z-50 { z-index: 50; }
-        .absolute { position: absolute; }
-        
-        .modal-container {
-          position: fixed;
-          top: 0;
-          left: 0;
-          right: 0;
-          bottom: 0;
-          z-index: 100;
-          display: flex;
-          align-items: center;
-          justify-content: center;
-          padding: 1rem;
-        }
-
-        .modal-backdrop {
-          position: absolute;
-          top: 0;
-          left: 0;
-          right: 0;
-          bottom: 0;
-          background-color: rgba(0, 0, 0, 0.7);
-          backdrop-filter: blur(4px);
-        }
-
-        .modal-content {
-          position: relative;
-          z-index: 101;
-          width: 100%;
-          max-width: 440px;
-          padding: 2rem;
-          background: rgba(18, 18, 18, 0.95);
-          border: 1px solid rgba(255, 255, 255, 0.1);
-          border-radius: 20px;
-          box-shadow: 0 20px 40px rgba(0, 0, 0, 0.4);
-        }
-
-        .text-center { text-align: center; }
-        .inline-block { display: inline-block; }
-        .rounded-2xl { border-radius: 1rem; }
-        .shadow-2xl { box-shadow: 0 25px 50px -12px rgba(0,0,0,0.5); }
-        .shadow-emerald-500\/20 { box-shadow: 0 0 40px rgba(16, 185, 129, 0.2); }
-        .bg-white { background-color: #ffffff; }
-
-        @media (min-width: 768px) {
-          .md\:grid-cols-2 { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-          .md\:flex-row { flex-direction: row; }
-        }
-        @media (min-width: 1024px) {
-          .lg\:grid-cols-3 { grid-template-columns: repeat(3, minmax(0, 1fr)); }
-        }
-
-        .bg-clip-text { -webkit-background-clip: text; background-clip: text; }
-        .text-transparent { color: transparent; }
-        .bg-gradient-to-r { background-image: linear-gradient(to right, var(--tw-gradient-stops)); }
-        .from-emerald-400 { --tw-gradient-from: #34d399; --tw-gradient-to: rgb(52 211 153 / 0); --tw-gradient-stops: var(--tw-gradient-from), var(--tw-gradient-to); }
-        .to-cyan-400 { --tw-gradient-to: #22d3ee; }
-
-        .animate-spin { animation: spin 1s linear infinite; }
-        @keyframes spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
-      `}</style>
     </div>
   );
 }
