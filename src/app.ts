@@ -9,10 +9,17 @@ import { sessionRoutes } from './routes/session.routes.js';
 import { messageRoutes } from './routes/message.routes.js';
 import { authMiddleware, ipWhitelistMiddleware } from './middleware/auth.js';
 import { globalRateLimiter } from './middleware/rateLimit.js';
+import cors from '@fastify/cors';
 
 const fastify = Fastify({
     logger: false, // Using custom pino logger
     trustProxy: true,
+});
+
+// Register CORS
+fastify.register(cors, {
+    origin: true, // Allow all origins for the dashboard
+    methods: ['GET', 'POST', 'DELETE', 'OPTIONS'],
 });
 
 // Register middleware
