@@ -8,12 +8,14 @@ import { Boom } from '@hapi/boom';
 import { supabase } from '../config/supabase.js';
 import { redis } from '../config/redis.js';
 import { logger } from '../utils/logger.js';
-import { humanDelay, typingDuration, gaussianRandom } from '../utils/delays.js';
+import { humanDelay, typingDuration, gaussianRandom, randomDelay } from '../utils/delays.js';
 import { env } from '../config/env.js';
 import { useRedisAuthState } from './authState/RedisAuthState.js';
 import { proxyManager, Proxy } from './ProxyManager.js';
 import { HttpsProxyAgent } from 'https-proxy-agent';
+import { encrypt } from '../utils/encryption.js';
 import pino from 'pino';
+import crypto from 'crypto';
 
 export class WhatsAppClient {
     private socket: WASocket | null = null;
@@ -64,8 +66,17 @@ export class WhatsAppClient {
             if (connection === 'open') {
                 this.connectionState = 'open';
                 this.reconnectAttempts = 0; // Reset backoff
-                await this.updateSessionStatus('active');
-                logger.info({ sessionId: this.sessionId, country: proxy?.country_code }, 'WhatsApp connected via residential proxy');
+
+                // Get the connected phone number from the socket
+                const phoneNumber = this.socket?.user?.id?.split(':')[0] || null;
+
+                await this.updateSessionStatus('active', phoneNumber);
+                await this.backupAuthState();
+                logger.info({
+                    sessionId: this.sessionId,
+                    phoneNumber,
+                    country: proxy?.country_code
+                }, 'WhatsApp connected via residential proxy');
             }
 
             if (connection === 'close') {
@@ -130,49 +141,183 @@ export class WhatsAppClient {
         }, totalDelay);
     }
 
-    async sendMessageWithTyping(recipient: string, message: string): Promise<string> {
+    async sendMessageWithTyping(
+        recipient: string,
+        message: string,
+        options?: {
+            timezone?: string;
+            respectWeekends?: boolean;
+            minConversationScore?: number;
+            bypassChecks?: boolean;
+        }
+    ): Promise<string> {
         if (!this.socket || this.connectionState !== 'open') {
             throw new Error('WhatsApp client not connected');
         }
 
-        // Check daily limit (Redis-backed for perf)
-        const dailyCount = await this.getDailyMessageCountRedis();
-        if (dailyCount >= env.MAX_MESSAGES_PER_DAY) {
-            throw new Error(`Daily message limit reached (${env.MAX_MESSAGES_PER_DAY})`);
+        const { verifyContact, getConversationScore } = await import('../utils/contactVerification.js');
+        const {
+            canSendMessage,
+            getAccountRiskProfile,
+            incrementHourlyCounter,
+            resetFailures,
+            recordFailure,
+        } = await import('../utils/adaptiveRateLimiting.js');
+        const { shouldDelayForHumanBehavior, getContextualDelay, shouldTakeRandomBreak } = await import('../utils/humanBehavior.js');
+
+        const timezone = options?.timezone || 'UTC';
+        const bypassChecks = options?.bypassChecks || false;
+
+        // PROTECTION 1: Adaptive Rate Limiting (account age-based)
+        if (!bypassChecks) {
+            const rateCheck = await canSendMessage(this.sessionId);
+            if (!rateCheck.allowed) {
+                logger.warn({ sessionId: this.sessionId, reason: rateCheck.reason }, 'Rate limit check failed');
+                throw new Error(rateCheck.reason || 'Rate limit exceeded');
+            }
         }
 
+        // PROTECTION 2: Contact Verification (CRITICAL - prevents spam flags)
+        const phoneNumber = recipient.replace('@s.whatsapp.net', '');
+        const contactCheck = await verifyContact(this.socket, phoneNumber, this.sessionId);
+
+        if (!contactCheck.exists) {
+            await recordFailure(this.sessionId);
+            throw new Error(`Number ${phoneNumber} does not exist on WhatsApp`);
+        }
+
+        // PROTECTION 3: Conversation History Scoring
+        const conversationScore = await getConversationScore(this.sessionId, recipient);
+        const minScore = options?.minConversationScore !== undefined ? options.minConversationScore : 10;
+
+        if (!bypassChecks && conversationScore < minScore && !contactCheck.isSaved) {
+            const warningMessage = `Low conversation score (${conversationScore}) with unsaved contact - HIGH BAN RISK`;
+
+            logger.warn(
+                { sessionId: this.sessionId, recipient, conversationScore, minScore, isSaved: contactCheck.isSaved },
+                warningMessage
+            );
+
+            // Only BLOCK if explicitly configured to do so
+            if (env.BLOCK_UNSAVED_CONTACTS) {
+                throw new Error(
+                    `Recipient ${phoneNumber} has ${warningMessage}. ` +
+                    `Score must be >=${minScore} or contact must be saved. ` +
+                    `Set BLOCK_UNSAVED_CONTACTS=false in .env to allow (not recommended for new accounts).`
+                );
+            }
+
+            // Otherwise just warn and continue (still applies all other protections)
+            logger.info(
+                { sessionId: this.sessionId, recipient },
+                'Proceeding with message despite low score (BLOCK_UNSAVED_CONTACTS=false)'
+            );
+        }
+
+        // PROTECTION 4: Human Behavior Patterns (time-based)
+        if (!bypassChecks) {
+            const behaviorCheck = shouldDelayForHumanBehavior(timezone, options?.respectWeekends);
+            if (behaviorCheck.shouldWait) {
+                logger.info(
+                    { sessionId: this.sessionId, reason: behaviorCheck.reason, waitMs: behaviorCheck.suggestedWaitMs },
+                    'Human behavior check - delaying message'
+                );
+                throw new Error(
+                    `${behaviorCheck.reason}. Message scheduled for later (wait ${Math.floor(behaviorCheck.suggestedWaitMs! / 60000)} minutes)`
+                );
+            }
+
+            // Random break simulation (5% chance)
+            const breakCheck = shouldTakeRandomBreak();
+            if (breakCheck.takeBreak) {
+                logger.debug(
+                    { sessionId: this.sessionId, breakMs: breakCheck.breakDurationMs },
+                    'Taking random break to simulate human behavior'
+                );
+                await new Promise((resolve) => setTimeout(resolve, breakCheck.breakDurationMs));
+            }
+        }
+
+        // Get dynamic risk profile for adaptive delays
+        const riskProfile = await getAccountRiskProfile(this.sessionId);
+        logger.info(
+            {
+                sessionId: this.sessionId,
+                recipient,
+                riskLevel: riskProfile.riskLevel,
+                accountAge: Math.floor(riskProfile.ageInDays),
+                conversationScore,
+            },
+            'Sending message with risk profile'
+        );
+
+        // Format recipient
         const jid = recipient.includes('@') ? recipient : `${recipient}@s.whatsapp.net`;
 
-        // Anti-ban: Gaussian human-like delay
-        await humanDelay();
+        try {
+            // ANTI-BAN: Contextual delay based on time of day
+            const contextualDelay = getContextualDelay(timezone);
+            await new Promise((resolve) => setTimeout(resolve, contextualDelay));
 
-        // Anti-ban: Natural typing simulation
-        const typingMs = typingDuration(message);
-        await this.socket.presenceSubscribe(jid);
-        await this.socket.sendPresenceUpdate('composing', jid);
+            // ANTI-BAN: Additional random delay with adaptive timing
+            await randomDelay(riskProfile.minDelayMs, riskProfile.maxDelayMs);
 
-        // Split typing into chunks if long message
-        await new Promise((resolve) => setTimeout(resolve, typingMs));
+            // ANTI-BAN: Typing simulation
+            const typingMs = typingDuration(message);
+            await this.socket.presenceSubscribe(jid);
+            await this.socket.sendPresenceUpdate('composing', jid);
+            await new Promise((resolve) => setTimeout(resolve, typingMs));
+            await this.socket.sendPresenceUpdate('paused', jid);
 
-        await this.socket.sendPresenceUpdate('paused', jid);
+            // Send message
+            const result = await this.socket.sendMessage(jid, { text: message });
 
-        // Send message
-        const result = await this.socket.sendMessage(jid, { text: message });
+            // SUCCESS: Reset failure counter
+            await resetFailures(this.sessionId);
 
-        // Increment counters
-        await this.incrementCounters();
+            // Increment counters
+            await incrementHourlyCounter(this.sessionId);
+            await this.incrementCounters(); // Local Redis counter + DB sync
 
-        const messageId = result?.key?.id || crypto.randomUUID();
-        await supabase.from('messages').insert({
-            id: messageId,
-            session_id: this.sessionId,
-            recipient: recipient,
-            content: message,
-            status: 'sent',
-            sent_at: new Date().toISOString(),
-        });
+            // Log to database
+            const messageId = result?.key?.id || crypto.randomUUID();
+            await supabase.from('messages').insert({
+                id: messageId,
+                session_id: this.sessionId,
+                recipient: recipient,
+                content: message,
+                status: 'sent',
+                sent_at: new Date().toISOString(),
+            });
 
-        return messageId;
+            logger.info({ messageId, sessionId: this.sessionId, recipient }, 'Message sent successfully');
+
+            return messageId;
+        } catch (error) {
+            // FAILURE: Record failure for adaptive rate limiting
+            await recordFailure(this.sessionId);
+            logger.error({ sessionId: this.sessionId, recipient, error }, 'Failed to send message');
+            throw error;
+        }
+    }
+
+    private async backupAuthState(): Promise<void> {
+        try {
+            const creds = await redis.get(`auth:${this.sessionId}:creds`);
+            if (creds) {
+                const encrypted = encrypt(creds);
+                await supabase
+                    .from('sessions')
+                    .update({
+                        auth_backup: encrypted,
+                        updated_at: new Date().toISOString()
+                    })
+                    .eq('id', this.sessionId);
+                logger.info({ sessionId: this.sessionId }, 'Auth state backed up');
+            }
+        } catch (error) {
+            logger.error({ sessionId: this.sessionId, error }, 'Failed to backup auth state');
+        }
     }
 
     private async getDailyMessageCountRedis(): Promise<number> {
@@ -193,13 +338,14 @@ export class WhatsAppClient {
         Promise.resolve(supabase.rpc('increment_message_count', { session_id: this.sessionId })).catch(() => { });
     }
 
-    private async updateSessionStatus(status: string): Promise<void> {
+    private async updateSessionStatus(status: string, phoneNumber?: string | null): Promise<void> {
         await supabase
             .from('sessions')
             .update({
                 status,
                 last_active: new Date().toISOString(),
                 ...(status === 'active' ? { connected_at: new Date().toISOString() } : {}),
+                ...(phoneNumber ? { phone_number: phoneNumber } : {}),
             })
             .eq('id', this.sessionId);
     }
@@ -223,4 +369,3 @@ export class WhatsAppClient {
         await proxyManager.releaseProxy(this.sessionId);
     }
 }
-

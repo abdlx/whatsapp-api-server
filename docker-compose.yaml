@@ -1,0 +1,54 @@
+version: '3.8'
+
+services:
+  app:
+    build: .
+    environment:
+      - NODE_ENV=production
+      - PORT=3000
+      - SUPABASE_URL=${SUPABASE_URL}
+      - SUPABASE_SERVICE_ROLE_KEY=${SUPABASE_SERVICE_ROLE_KEY}
+      - REDIS_URL=${REDIS_URL}
+      - API_KEY=${API_KEY}
+      - ALLOWED_IPS=${ALLOWED_IPS:-*}
+      - MAX_MESSAGES_PER_DAY=${MAX_MESSAGES_PER_DAY:-200}
+      - MIN_DELAY_MS=${MIN_DELAY_MS:-3000}
+      - MAX_DELAY_MS=${MAX_DELAY_MS:-8000}
+      - TYPING_SPEED_MS=${TYPING_SPEED_MS:-50}
+      - DEFAULT_TIMEZONE=${DEFAULT_TIMEZONE:-UTC}
+      - RESPECT_WEEKENDS=${RESPECT_WEEKENDS:-false}
+      - BLOCK_UNSAVED_CONTACTS=${BLOCK_UNSAVED_CONTACTS:-false}
+      - ALERT_WEBHOOK_URL=${ALERT_WEBHOOK_URL:-}
+    volumes:
+      # Named volume for persistent WhatsApp sessions in Coolify
+      - whatsapp_sessions:/app/sessions
+    networks:
+      - coolify
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 20s
+
+  dashboard:
+    build:
+      context: ./dashboard
+      dockerfile: Dockerfile
+    environment:
+      - NODE_ENV=production
+      - PORT=3001
+    networks:
+      - coolify
+    restart: unless-stopped
+    ports:
+      - "3001:3001"
+
+networks:
+  coolify:
+    external: true
+
+volumes:
+  whatsapp_sessions:
+

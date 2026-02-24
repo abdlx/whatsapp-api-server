@@ -85,7 +85,8 @@ export async function sessionRoutes(fastify: FastifyInstance): Promise<void> {
 
     // List all sessions
     fastify.get('/sessions', async (_request, reply) => {
-        const { data, error } = await (await import('../config/supabase.js')).supabase
+        const supabaseModule = await import('../config/supabase.js');
+        const { data, error } = await supabaseModule.supabase
             .from('sessions')
             .select('id, agent_name, status, phone_number, last_active, daily_message_count')
             .order('created_at', { ascending: false });
@@ -94,9 +95,31 @@ export async function sessionRoutes(fastify: FastifyInstance): Promise<void> {
             return reply.status(500).send({ error: 'Database Error', message: error.message });
         }
 
+        // Sync live connection state with database
+        const sessions = await Promise.all((data || []).map(async (session) => {
+            const liveClient = await sessionManager.getSession(session.id);
+
+            if (liveClient) {
+                const liveStatus = liveClient.connectionState === 'open' ? 'active' :
+                    liveClient.connectionState === 'connecting' ? 'pairing' :
+                        'disconnected';
+
+                // Update database if status differs
+                if (session.status !== liveStatus) {
+                    await supabaseModule.supabase
+                        .from('sessions')
+                        .update({ status: liveStatus, last_active: new Date().toISOString() })
+                        .eq('id', session.id);
+                    session.status = liveStatus;
+                }
+            }
+
+            return session;
+        }));
+
         return reply.send({
-            count: data?.length || 0,
-            sessions: data,
+            count: sessions.length,
+            sessions,
         });
     });
 }

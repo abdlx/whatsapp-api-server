@@ -24,6 +24,13 @@ const envSchema = z.object({
     MAX_DELAY_MS: z.coerce.number().default(8000),
     TYPING_SPEED_MS: z.coerce.number().default(50),
 
+    // Human Behavior Simulation
+    DEFAULT_TIMEZONE: z.string().default('UTC'),
+    RESPECT_WEEKENDS: z.coerce.boolean().default(false),
+
+    // Contact Protection
+    BLOCK_UNSAVED_CONTACTS: z.coerce.boolean().default(false),
+
     // Monitoring
     ALERT_WEBHOOK_URL: z.string().optional(),
 });

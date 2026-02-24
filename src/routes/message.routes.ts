@@ -9,6 +9,11 @@ const sendMessageSchema = z.object({
     sessionId: z.string().min(1),
     recipient: z.string().min(10).max(20), // Phone number
     message: z.string().min(1).max(4096),
+    // Anti-ban options
+    timezone: z.string().optional(),
+    respectWeekends: z.boolean().optional(),
+    minConversationScore: z.number().min(0).max(100).optional(),
+    bypassChecks: z.boolean().optional(), // ⚠️ Use only for testing
 });
 
 const getMessagesSchema = z.object({

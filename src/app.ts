@@ -9,19 +9,44 @@ import { sessionRoutes } from './routes/session.routes.js';
 import { messageRoutes } from './routes/message.routes.js';
 import { authMiddleware, ipWhitelistMiddleware } from './middleware/auth.js';
 import { globalRateLimiter } from './middleware/rateLimit.js';
+import cors from '@fastify/cors';
 
 const fastify = Fastify({
     logger: false, // Using custom pino logger
     trustProxy: true,
 });
 
-// Register middleware
-fastify.addHook('onRequest', authMiddleware);
-fastify.addHook('onRequest', ipWhitelistMiddleware);
-fastify.addHook('onRequest', globalRateLimiter);
+// Register CORS
+fastify.register(cors, {
+    origin: true, // Allow all origins for the dashboard
+    methods: ['GET', 'POST', 'DELETE', 'OPTIONS'],
+});
 
-// Health check endpoint (no auth required)
-fastify.get('/health', { preHandler: [] }, async (_request, reply) => {
+// Register middleware
+fastify.addHook('onRequest', async (request, reply) => {
+    // Skip auth and rate limiting for health check and root
+    const path = request.url.split('?')[0];
+    if (path === '/health' || path === '/' || path === '/health/') {
+        return;
+    }
+
+    await authMiddleware(request, reply);
+    await ipWhitelistMiddleware(request, reply);
+    await globalRateLimiter(request, reply);
+});
+
+// Root route for simple verification
+fastify.get('/', async () => {
+    return {
+        status: 'ok',
+        message: 'WhatsApp API Server is running',
+        version: '1.0.0',
+        documentation: 'https://github.com/abdlx/whatsapp-api-server'
+    };
+});
+
+// Health check endpoint
+fastify.get('/health', async (_request, reply) => {
     return reply.send({
         status: 'ok',
         uptime: process.uptime(),
@@ -30,9 +55,25 @@ fastify.get('/health', { preHandler: [] }, async (_request, reply) => {
     });
 });
 
+
 // Register routes
 fastify.register(sessionRoutes);
 fastify.register(messageRoutes);
+
+// Custom 404 handler for debugging
+fastify.setNotFoundHandler((request, reply) => {
+    logger.warn({
+        url: request.url,
+        method: request.method,
+        headers: request.headers,
+    }, '404 Not Found - Route not matched');
+
+    return reply.status(404).send({
+        error: 'Not Found',
+        message: `Route ${request.method}:${request.url} not found on WhatsApp API Server`,
+        timestamp: new Date().toISOString(),
+    });
+});
 
 // Graceful shutdown handler
 async function gracefulShutdown(signal: string): Promise<void> {
@@ -66,15 +107,34 @@ process.on('SIGINT', () => gracefulShutdown('SIGINT'));
 // Start server
 async function start(): Promise<void> {
     try {
+        logger.info('Initializing WhatsApp API Server...');
+
         // Restore existing sessions
         await sessionManager.restoreAllSessions();
+        logger.info('Sessions restored');
 
         // Start health monitor
         healthMonitor.start();
 
+        // Register routes (these are fastify.register calls)
+        logger.info('Registering routes...');
+
+        // Wait for all plugins/routes to be registered
+        await fastify.ready();
+        logger.info('Fastify ready (all plugins registered)');
+
         // Start HTTP server
-        await fastify.listen({ port: env.PORT, host: '0.0.0.0' });
-        logger.info({ port: env.PORT, env: env.NODE_ENV }, 'WhatsApp API Server started');
+        const port = env.PORT || 3000;
+        const host = '0.0.0.0'; // MUST be 0.0.0.0 for Docker/Coolify
+
+        logger.info({ port, host }, 'Attempting to start HTTP server...');
+
+        const address = await fastify.listen({ port, host });
+        logger.info({ address, env: env.NODE_ENV, port, host }, 'WhatsApp API Server started and listening');
+
+        // Print all registered routes for debugging
+        logger.info('Registered routes:');
+        console.log(fastify.printRoutes());
     } catch (err) {
         logger.error({ err }, 'Failed to start server');
         process.exit(1);

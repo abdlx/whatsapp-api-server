@@ -29,6 +29,7 @@
     "typescript": "^5.9.3"
   },
   "dependencies": {
+    "@fastify/cors": "^11.2.0",
     "@hapi/boom": "^10.0.1",
     "@supabase/supabase-js": "^2.95.3",
     "@whiskeysockets/baileys": "^7.0.0-rc.9",
