@@ -1,4 +1,5 @@
 import { Queue, Worker, Job } from 'bullmq';
+
 import { redis } from '../config/redis.js';
 import { sessionManager } from '../core/SessionManager.js';
 import { supabase } from '../config/supabase.js';
@@ -9,6 +10,12 @@ interface MessageJob {
     recipient: string;
     message: string;
     messageId?: string;
+    options?: {
+        timezone?: string;
+        respectWeekends?: boolean;
+        minConversationScore?: number;
+        bypassChecks?: boolean;
+    };
 }
 
 const QUEUE_NAME = 'whatsapp-messages';
@@ -16,10 +23,10 @@ const QUEUE_NAME = 'whatsapp-messages';
 export const messageQueue = new Queue<MessageJob>(QUEUE_NAME, {
     connection: redis,
     defaultJobOptions: {
-        attempts: 3,
+        attempts: 10, // Increased attempts for behavior-based retries
         backoff: {
             type: 'exponential',
-            delay: 5000,
+            delay: 10000,
         },
         removeOnComplete: 100,
         removeOnFail: 1000,
@@ -29,7 +36,7 @@ export const messageQueue = new Queue<MessageJob>(QUEUE_NAME, {
 export const messageWorker = new Worker<MessageJob>(
     QUEUE_NAME,
     async (job: Job<MessageJob>) => {
-        const { sessionId, recipient, message, messageId } = job.data;
+        const { sessionId, recipient, message, messageId, options } = job.data;
 
         logger.info({ jobId: job.id, sessionId, recipient }, 'Processing message job');
 
@@ -42,19 +49,32 @@ export const messageWorker = new Worker<MessageJob>(
             throw new Error(`Session ${sessionId} not connected`);
         }
 
-        const sentMessageId = await client.sendMessageWithTyping(recipient, message);
+        try {
+            const sentMessageId = await client.sendMessageWithTyping(recipient, message, options);
 
-        // Update message record if we have an existing ID
-        if (messageId) {
-            await supabase
-                .from('messages')
-                .update({ status: 'sent', sent_at: new Date().toISOString() })
-                .eq('id', messageId);
+            // Update message record if we have an existing ID
+            if (messageId) {
+                await supabase
+                    .from('messages')
+                    .update({ status: 'sent', sent_at: new Date().toISOString() })
+                    .eq('id', messageId);
+            }
+
+            logger.info({ jobId: job.id, messageId: sentMessageId }, 'Message sent successfully');
+
+            return { messageId: sentMessageId };
+        } catch (error: any) {
+            // Check for human behavior delays (Active Hours / Weekend checks)
+            if (error.message.includes('scheduled for later')) {
+                logger.info(
+                    { jobId: job.id, reason: error.message },
+                    'Message scheduled for retry due to human behavior patterns'
+                );
+            }
+
+            throw error;
         }
 
-        logger.info({ jobId: job.id, messageId: sentMessageId }, 'Message sent successfully');
-
-        return { messageId: sentMessageId };
     },
     {
         connection: redis,
@@ -71,6 +91,7 @@ messageWorker.on('failed', async (job, error) => {
 
     logger.error({ jobId: job.id, error: error.message }, 'Message job failed');
 
+
     // Update message status to failed
     if (job.data.messageId) {
         await supabase
@@ -83,7 +104,8 @@ messageWorker.on('failed', async (job, error) => {
 export async function addMessageToQueue(
     sessionId: string,
     recipient: string,
-    message: string
+    message: string,
+    options?: MessageJob['options']
 ): Promise<string> {
     const messageId = crypto.randomUUID();
 
@@ -102,9 +124,11 @@ export async function addMessageToQueue(
         recipient,
         message,
         messageId,
+        options,
     });
 
     logger.info({ messageId, sessionId, recipient }, 'Message added to queue');
 
     return messageId;
 }
+

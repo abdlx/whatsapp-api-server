@@ -109,13 +109,15 @@ export class SessionManager {
 
         const { data: sessions } = await supabase
             .from('sessions')
-            .select('id')
-            .in('status', ['active', 'error']); // Also try to restore those in error state
+            .select('id, auth_state_backup')
+            .in('status', ['active', 'error']);
 
         if (!sessions || sessions.length === 0) {
             logger.info('No active sessions to restore');
             return;
         }
+
+        const { decrypt } = await import('../utils/encryption.js');
 
         const restorePromises = sessions.map(async (session) => {
             try {
@@ -124,6 +126,18 @@ export class SessionManager {
                 if (owner && owner !== process.pid.toString()) {
                     logger.debug({ sessionId: session.id, owner }, 'Session owned by another process, skipping restoration');
                     return;
+                }
+
+                // Verify if auth state exists in Redis
+                const redisCreds = await redis.get(`auth:${session.id}:creds`);
+                if (!redisCreds && session.auth_state_backup) {
+                    try {
+                        const decrypted = decrypt(session.auth_state_backup);
+                        await redis.set(`auth:${session.id}:creds`, decrypted);
+                        logger.info({ sessionId: session.id }, 'Restored auth state from Supabase backup to Redis');
+                    } catch (decryptError) {
+                        logger.error({ sessionId: session.id, error: decryptError }, 'Failed to decrypt session backup');
+                    }
                 }
 
                 const client = new WhatsAppClient(session.id);
@@ -144,6 +158,7 @@ export class SessionManager {
 
         logger.info({ count: this.sessions.size }, 'Session restoration complete');
     }
+
 
     async disconnectAll(): Promise<void> {
         logger.info('Disconnecting all sessions...');

@@ -309,7 +309,7 @@ export class WhatsAppClient {
                 await supabase
                     .from('sessions')
                     .update({
-                        auth_backup: encrypted,
+                        auth_state_backup: encrypted,
                         updated_at: new Date().toISOString()
                     })
                     .eq('id', this.sessionId);
