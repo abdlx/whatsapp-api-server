@@ -38,7 +38,7 @@ export class HealthMonitor {
 
         if (!sessions || sessions.length === 0) return;
 
-        for (const session of sessions) {
+        await Promise.allSettled(sessions.map(async (session) => {
             const client = await sessionManager.getSession(session.id);
 
             if (!client || client.connectionState !== 'open') {
@@ -52,7 +52,6 @@ export class HealthMonitor {
                     timestamp: new Date().toISOString(),
                 });
 
-                // Attempt reconnect
                 if (client) {
                     try {
                         await client.reconnect();
@@ -75,14 +74,18 @@ export class HealthMonitor {
                     }
                 }
             } else {
-                // Update last_active timestamp
-                await supabase
-                    .from('sessions')
-                    .update({ last_active: new Date().toISOString() })
-                    .eq('id', session.id);
+                // Background update
+                Promise.resolve(
+                    supabase
+                        .from('sessions')
+                        .update({ last_active: new Date().toISOString() })
+                        .eq('id', session.id)
+                ).catch(() => { });
+
             }
-        }
+        }));
     }
+
 
     private async sendAlert(alert: {
         severity: string;

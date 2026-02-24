@@ -7,6 +7,7 @@ import QRCode from 'qrcode';
 const createSessionSchema = z.object({
     agentId: z.string().min(1).max(50),
     agentName: z.string().min(1).max(100),
+    phoneNumber: z.string().min(10).max(20), // Required for proxy geo-matching
 });
 
 export async function sessionRoutes(fastify: FastifyInstance): Promise<void> {
@@ -14,7 +15,11 @@ export async function sessionRoutes(fastify: FastifyInstance): Promise<void> {
     fastify.post('/session/create', async (request, reply) => {
         try {
             const body = createSessionSchema.parse(request.body);
-            const { sessionId, qr } = await sessionManager.createSession(body.agentId, body.agentName);
+            const { sessionId, qr } = await sessionManager.createSession(
+                body.agentId,
+                body.agentName,
+                body.phoneNumber
+            );
 
             return reply.status(201).send({
                 sessionId,
@@ -22,6 +27,7 @@ export async function sessionRoutes(fastify: FastifyInstance): Promise<void> {
                 message: qr ? 'Scan QR code to connect' : 'Session initializing',
             });
         } catch (error: unknown) {
+
             if (error instanceof z.ZodError) {
                 return reply.status(400).send({ error: 'Validation Error', details: error.issues });
             }

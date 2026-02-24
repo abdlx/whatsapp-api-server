@@ -1,14 +1,28 @@
 import { WhatsAppClient } from './WhatsAppClient.js';
 import { supabase } from '../config/supabase.js';
 import { logger } from '../utils/logger.js';
-import { decrypt } from '../utils/encryption.js';
-import fs from 'fs/promises';
-import path from 'path';
+import { proxyManager } from './ProxyManager.js';
+import { redis } from '../config/redis.js';
 
 export class SessionManager {
     private sessions: Map<string, WhatsAppClient> = new Map();
+    private heartbeatInterval: NodeJS.Timeout | null = null;
 
-    async createSession(agentId: string, agentName: string): Promise<{ sessionId: string; qr: string | null }> {
+    /**
+     * Start session heartbeats in Redis to track ownership in a cluster.
+     */
+    startHeartbeats() {
+        if (this.heartbeatInterval) return;
+        this.heartbeatInterval = setInterval(async () => {
+            const pipeline = redis.pipeline();
+            for (const sessionId of this.sessions.keys()) {
+                pipeline.set(`session:owner:${sessionId}`, process.pid.toString(), 'EX', 60);
+            }
+            await pipeline.exec();
+        }, 30000);
+    }
+
+    async createSession(agentId: string, agentName: string, phoneNumber: string): Promise<{ sessionId: string; qr: string | null }> {
         // Check if session already exists
         if (this.sessions.has(agentId)) {
             const existing = this.sessions.get(agentId)!;
@@ -17,12 +31,15 @@ export class SessionManager {
             }
         }
 
-        // Create database entry
+        // 1. Assign geo-matched residential proxy
+        await proxyManager.assignProxy(agentId, phoneNumber);
+
+        // 2. Create/Update database entry
         const { error } = await supabase.from('sessions').upsert({
             id: agentId,
             agent_name: agentName,
+            phone_number: phoneNumber,
             status: 'pairing',
-            created_at: new Date().toISOString(),
             updated_at: new Date().toISOString(),
         });
 
@@ -31,7 +48,7 @@ export class SessionManager {
             throw error;
         }
 
-        // Create client and connect
+        // 3. Create client and connect
         const client = new WhatsAppClient(agentId);
         const qr = await client.connect();
 
@@ -74,63 +91,58 @@ export class SessionManager {
             this.sessions.delete(agentId);
         }
 
+        // Release proxy and owner
+        await proxyManager.releaseProxy(agentId);
+        await redis.del(`session:owner:${agentId}`);
+
         // Delete from database
         await supabase.from('sessions').delete().eq('id', agentId);
-
-        // Delete local session files
-        const sessionPath = path.join(process.cwd(), 'sessions', agentId);
-        try {
-            await fs.rm(sessionPath, { recursive: true, force: true });
-        } catch {
-            // Ignore errors if directory doesn't exist
-        }
 
         logger.info({ agentId }, 'Session deleted');
     }
 
+    /**
+     * Concurrent restoration of all active sessions.
+     */
     async restoreAllSessions(): Promise<void> {
         logger.info('Restoring active sessions from database...');
 
         const { data: sessions } = await supabase
             .from('sessions')
-            .select('id, auth_state_backup')
-            .eq('status', 'active');
+            .select('id')
+            .in('status', ['active', 'error']); // Also try to restore those in error state
 
         if (!sessions || sessions.length === 0) {
             logger.info('No active sessions to restore');
             return;
         }
 
-        for (const session of sessions) {
+        const restorePromises = sessions.map(async (session) => {
             try {
-                // Restore auth state from backup if local files don't exist
-                const sessionPath = path.join(process.cwd(), 'sessions', session.id);
-                const credsPath = path.join(sessionPath, 'creds.json');
-
-                try {
-                    await fs.access(credsPath);
-                } catch {
-                    // Local creds don't exist, restore from backup
-                    if (session.auth_state_backup) {
-                        await fs.mkdir(sessionPath, { recursive: true });
-                        const decrypted = decrypt(session.auth_state_backup);
-                        await fs.writeFile(credsPath, decrypted);
-                        logger.info({ sessionId: session.id }, 'Restored auth state from backup');
-                    }
+                // Check if already owned by another process in the cluster
+                const owner = await redis.get(`session:owner:${session.id}`);
+                if (owner && owner !== process.pid.toString()) {
+                    logger.debug({ sessionId: session.id, owner }, 'Session owned by another process, skipping restoration');
+                    return;
                 }
 
-                // Connect
                 const client = new WhatsAppClient(session.id);
                 await client.connect();
                 this.sessions.set(session.id, client);
+
+                // Mark ownership
+                await redis.set(`session:owner:${session.id}`, process.pid.toString(), 'EX', 60);
 
                 logger.info({ sessionId: session.id }, 'Session restored');
             } catch (error) {
                 logger.error({ sessionId: session.id, error }, 'Failed to restore session');
             }
-        }
+        });
 
-        logger.info({ count: sessions.length }, 'Session restoration complete');
+        await Promise.allSettled(restorePromises);
+        this.startHeartbeats();
+
+        logger.info({ count: this.sessions.size }, 'Session restoration complete');
     }
 
     async disconnectAll(): Promise<void> {
@@ -139,6 +151,7 @@ export class SessionManager {
         for (const [id, client] of this.sessions) {
             try {
                 await client.disconnect();
+                await redis.del(`session:owner:${id}`);
                 logger.info({ sessionId: id }, 'Session disconnected');
             } catch (error) {
                 logger.error({ sessionId: id, error }, 'Error disconnecting session');
@@ -146,6 +159,10 @@ export class SessionManager {
         }
 
         this.sessions.clear();
+        if (this.heartbeatInterval) {
+            clearInterval(this.heartbeatInterval);
+            this.heartbeatInterval = null;
+        }
     }
 
     getActiveSessionCount(): number {
@@ -153,5 +170,5 @@ export class SessionManager {
     }
 }
 
-// Export singleton instance
 export const sessionManager = new SessionManager();
+
