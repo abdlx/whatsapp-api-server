@@ -17,16 +17,19 @@ export async function sessionRouterMiddleware(
     request: FastifyRequest,
     reply: FastifyReply
 ): Promise<void> {
-    // Only intercept session-scoped write operations that need an active in-memory socket
+    // Intercept all session-scoped operations that need an active in-memory socket
     const routedPaths = [
         '/message/send',
-        '/session/',  // covers /session/:id/status and delete
+        '/message/',      // covers /message/:id status lookup
+        '/messages',      // message listing (uses sessionId query)
+        '/session/',      // covers /session/:id/status and delete
+        '/groups',        // covers all group management endpoints
     ];
 
     const needsRouting = routedPaths.some((p) => request.url.startsWith(p));
     if (!needsRouting) return;
 
-    // Extract sessionId from body or URL path
+    // Extract sessionId from body, URL path, or query params
     let sessionId: string | undefined;
 
     const body = request.body as Record<string, unknown> | undefined;
@@ -36,6 +39,13 @@ export async function sessionRouterMiddleware(
         // Extract from URL pattern /session/:id/...
         const match = request.url.match(/^\/session\/([^/?]+)/);
         if (match) sessionId = match[1];
+    }
+
+    // Also check query params (group routes and message listing use ?sessionId=...)
+    if (!sessionId) {
+        const url = new URL(request.url, `http://${request.hostname}`);
+        const querySessionId = url.searchParams.get('sessionId');
+        if (querySessionId) sessionId = querySessionId;
     }
 
     if (!sessionId) return;

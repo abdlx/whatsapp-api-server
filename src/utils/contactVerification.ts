@@ -49,8 +49,9 @@ export async function verifyContact(
         return result;
     } catch (error) {
         logger.error({ phoneNumber, error }, 'Failed to verify contact');
-        // Conservative approach: assume unsaved if verification fails
-        return { exists: true, isSaved: false, isBlocked: false };
+        // Conservative approach: assume contact does NOT exist if verification fails
+        // This prevents burning rate-limit budget on unverifiable numbers
+        return { exists: false, isSaved: false, isBlocked: false };
     }
 }
 

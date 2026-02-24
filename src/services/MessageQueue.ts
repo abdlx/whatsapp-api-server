@@ -39,18 +39,28 @@ export const messageWorker = new Worker<MessageJob>(
     async (job: Job<MessageJob>) => {
         const { sessionId, recipient, outbound, messageId, options } = job.data;
 
+        // Per-session lock — ensures only one message per session is processed at a time
+        // while allowing different sessions to process in parallel
+        const lockKey = `queue:lock:${sessionId}`;
+        // Lock TTL must exceed max break duration (10 min) + max delay (~45s) + buffer
+        const acquired = await redis.set(lockKey, job.id ?? '1', 'EX', 15 * 60, 'NX');
+        if (!acquired) {
+            // Another job for this session is in progress — throw to let BullMQ retry
+            throw new Error(`Session ${sessionId} busy — will retry`);
+        }
+
         logger.info({ jobId: job.id, sessionId, recipient, type: outbound.type }, 'Processing message job');
 
-        const client = await sessionManager.getSession(sessionId);
-        if (!client) {
-            throw new Error(`Session ${sessionId} not found`);
-        }
-
-        if (client.connectionState !== 'open') {
-            throw new Error(`Session ${sessionId} not connected`);
-        }
-
         try {
+            const client = await sessionManager.getSession(sessionId);
+            if (!client) {
+                throw new Error(`Session ${sessionId} not found`);
+            }
+
+            if (client.connectionState !== 'open') {
+                throw new Error(`Session ${sessionId} not connected`);
+            }
+
             const sentMessageId = await client.sendMessage(recipient, outbound, options);
 
             if (messageId) {
@@ -68,11 +78,14 @@ export const messageWorker = new Worker<MessageJob>(
                 logger.info({ jobId: job.id, reason: error.message }, 'Message rescheduled due to human behavior patterns');
             }
             throw error;
+        } finally {
+            // Always release the per-session lock
+            await redis.del(lockKey);
         }
     },
     {
         connection: redis,
-        concurrency: 1, // Process one message at a time per session for anti-ban safety
+        concurrency: 20, // Process up to 20 sessions in parallel (one per session via lock)
     }
 );
 

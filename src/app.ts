@@ -12,13 +12,20 @@ import { webhookWorker } from './services/WebhookDispatcher.js';
 import { sessionRoutes } from './routes/session.routes.js';
 import { messageRoutes } from './routes/message.routes.js';
 import { webhookRoutes } from './routes/webhook.routes.js';
+import { groupRoutes } from './routes/group.routes.js';
+import { chatRoutes } from './routes/chat.routes.js';
+import { contactRoutes } from './routes/contact.routes.js';
+import { presenceRoutes } from './routes/presence.routes.js';
+import { blacklistRoutes } from './routes/blacklist.routes.js';
+import { newsletterRoutes } from './routes/newsletter.routes.js';
+import { storyRoutes } from './routes/story.routes.js';
 import { authMiddleware, ipWhitelistMiddleware } from './middleware/auth.js';
 import { globalRateLimiter } from './middleware/rateLimit.js';
 import { sessionRouterMiddleware } from './middleware/sessionRouter.js';
 
 // ─── Server ─────────────────────────────────────────────────────────────────
 
-const fastify = Fastify({
+export const fastify = Fastify({
     logger: false, // Using custom pino logger
     trustProxy: true,
 });
@@ -37,6 +44,13 @@ await fastify.register(swagger, {
             { name: 'Sessions', description: 'Manage WhatsApp sessions' },
             { name: 'Messages', description: 'Send and track messages' },
             { name: 'Webhooks', description: 'Register and manage webhook endpoints' },
+            { name: 'Groups', description: 'Group management — create, update, participants' },
+            { name: 'Chats', description: 'Chat management — delete, archive, pin/mute' },
+            { name: 'Contacts', description: 'Contact management — existence check, info' },
+            { name: 'Presence', description: 'Presence management — online status, typing indicators' },
+            { name: 'Blacklist', description: 'Address book management — block/unblock' },
+            { name: 'Newsletters', description: 'Channel management — follow, unfollow, create' },
+            { name: 'Stories', description: 'Status updates — post text or media stories' },
         ],
         components: {
             securitySchemes: {
@@ -115,6 +129,13 @@ fastify.get('/health', {
 fastify.register(sessionRoutes);
 fastify.register(messageRoutes);
 fastify.register(webhookRoutes);
+fastify.register(groupRoutes);
+fastify.register(chatRoutes);
+fastify.register(contactRoutes);
+fastify.register(presenceRoutes);
+fastify.register(blacklistRoutes);
+fastify.register(newsletterRoutes);
+fastify.register(storyRoutes);
 
 // 404 handler
 fastify.setNotFoundHandler((request, reply) => {
@@ -177,4 +198,6 @@ async function start(): Promise<void> {
     }
 }
 
-start();
+if (process.env.NODE_ENV !== 'test') {
+    start();
+}

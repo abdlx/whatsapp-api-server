@@ -19,13 +19,33 @@ import { proxyManager, Proxy } from './ProxyManager.js';
 import { HttpsProxyAgent } from 'https-proxy-agent';
 import { encrypt } from '../utils/encryption.js';
 import { dispatchWebhookEvent, WebhookEventType } from '../services/WebhookDispatcher.js';
+import { getBrowserFingerprint } from '../utils/browserFingerprint.js';
 import pino from 'pino';
 import crypto from 'crypto';
 import axios from 'axios';
 
-// ─── Media Message Types ──────────────────────────────────────────────────────
+// ─── Media & Rich Message Types ───────────────────────────────────────────────
 
-export type OutboundMessageType = 'text' | 'image' | 'video' | 'audio' | 'document' | 'sticker';
+export type OutboundMessageType =
+    | 'text' | 'image' | 'video' | 'audio' | 'document' | 'sticker'
+    | 'button' | 'list' | 'poll' | 'location' | 'contact'
+    | 'voice' | 'gif' | 'link_preview' | 'live_location' | 'contact_list' | 'short_video';
+
+export interface ButtonItem {
+    id: string;
+    text: string;
+}
+
+export interface ListRow {
+    id: string;
+    title: string;
+    description?: string;
+}
+
+export interface ListSection {
+    title: string;
+    rows: ListRow[];
+}
 
 export interface OutboundMessage {
     type: OutboundMessageType;
@@ -35,6 +55,39 @@ export interface OutboundMessage {
     mediaMimetype?: string;       // MIME type (required for base64)
     filename?: string;            // Filename for documents
     caption?: string;             // Caption for image/video
+    // Button messages (interactive format)
+    buttons?: ButtonItem[];       // Up to 3 buttons
+    footer?: string;              // Footer text for button/list messages
+    // List messages (interactive format)
+    listTitle?: string;           // Title for list header
+    buttonText?: string;          // Button text that opens the list
+    sections?: ListSection[];     // List sections with rows
+    // Poll messages
+    pollQuestion?: string;        // Poll question text
+    pollOptions?: string[];       // Poll answer options
+    pollSelectCount?: number;     // Max selectable options (0 = unlimited)
+    // Location messages
+    latitude?: number;
+    longitude?: number;
+    locationName?: string;
+    locationAddress?: string;
+    // Contact card messages
+    contactName?: string;
+    vcard?: string;
+    // Voice messages
+    ptt?: boolean;                // Push-to-talk (voice note) — true = voice bubble, false = audio file
+    // GIF messages
+    gifPlayback?: boolean;        // Send video as GIF (auto-play, no sound)
+    // Link preview
+    previewUrl?: string;          // URL to preview
+    previewTitle?: string;        // Custom preview title (optional)
+    previewDescription?: string;  // Custom preview description (optional)
+    previewThumbnailUrl?: string; // Custom thumbnail URL (optional)
+    // Live location
+    liveLocationDurationSeconds?: number; // Duration for live location sharing
+    // Contact list (multi-contact)
+    vcards?: string[];            // Multiple vCards for contact list messages
+    contactNames?: string[];      // Display names for each vCard
 }
 
 export interface SendOptions {
@@ -57,24 +110,38 @@ export class WhatsAppClient {
         this.sessionId = sessionId;
     }
 
+    /** Expose underlying Baileys socket for direct API calls (e.g., group management) */
+    getSocket(): WASocket | null {
+        return this.socket;
+    }
+
     async connect(): Promise<string | null> {
         // 1. Setup distributed auth state in Redis
         const { state, saveCreds } = await useRedisAuthState(redis, this.sessionId);
 
         // 2. Load residential proxy for this session
         const proxy = await proxyManager.getProxyForSession(this.sessionId);
+        if (!proxy && !env.ALLOW_DIRECT_CONNECTION) {
+            throw new Error(
+                `No proxy available for session ${this.sessionId}. ` +
+                'Set ALLOW_DIRECT_CONNECTION=true to allow connecting from the server\'s IP.'
+            );
+        }
         const agent = proxy
             ? new HttpsProxyAgent(`http://${proxy.username}:${proxy.password}@${proxy.host}:${proxy.port}`)
             : undefined;
 
         const silentLogger = pino({ level: 'silent' });
 
-        // 3. Initialize socket with premium fingerprint and proxy
+        // 3. Rotate browser fingerprint per session (monthly rotation)
+        const fingerprint = getBrowserFingerprint(this.sessionId);
+
+        // 4. Initialize socket with rotated fingerprint and proxy
         this.socket = makeWASocket({
             auth: state,
             printQRInTerminal: false,
             logger: silentLogger,
-            browser: Browsers.macOS('Desktop'), // High-trust signature
+            browser: fingerprint.browser as [string, string, string],
             agent,               // Use residential proxy for all WA traffic
             fetchAgent: agent,   // Use residential proxy for media
             markOnlineOnConnect: false, // Don't broadcast presence immediately (stealth)
@@ -317,7 +384,34 @@ export class WhatsAppClient {
             normalized.type = contentType ?? 'unknown';
         }
 
-        dispatchWebhookEvent({
+        // ── Download inbound media and upload to Supabase Storage ──────────
+        const mediaTypes = ['image', 'video', 'audio', 'document', 'sticker'];
+        if (mediaTypes.includes(normalized.type as string)) {
+            try {
+                const buffer = await downloadMediaMessage(msg, 'buffer', {});
+                const ext = ((normalized.mimetype as string) ?? 'application/octet-stream').split('/')[1] || 'bin';
+                const storagePath = `inbound/${this.sessionId}/${msg.key.id}.${ext}`;
+
+                const { data: uploadData } = await supabase.storage
+                    .from(env.MEDIA_BUCKET)
+                    .upload(storagePath, buffer as Buffer, {
+                        contentType: (normalized.mimetype as string) ?? 'application/octet-stream',
+                        upsert: true,
+                    });
+
+                if (uploadData) {
+                    const { data: urlData } = supabase.storage
+                        .from(env.MEDIA_BUCKET)
+                        .getPublicUrl(storagePath);
+                    normalized.mediaUrl = urlData.publicUrl;
+                }
+            } catch (err) {
+                logger.error({ sessionId: this.sessionId, msgId: msg.key.id, err }, 'Failed to download/upload inbound media');
+                // Non-fatal — webhook still fires with metadata even if media download fails
+            }
+        }
+
+        await dispatchWebhookEvent({
             event: 'message.received',
             sessionId: this.sessionId,
             timestamp: new Date().toISOString(),
@@ -355,12 +449,12 @@ export class WhatsAppClient {
                 throw new Error(rateCheck.reason || 'Rate limit exceeded');
             }
 
-            // 2. Human behavior / time-of-day gating
+            // 2. Human behavior / time-of-day gating — sleep internally instead of rejecting
             const behaviorCheck = shouldDelayForHumanBehavior(timezone, options?.respectWeekends);
-            if (behaviorCheck.shouldWait) {
-                throw new Error(
-                    `${behaviorCheck.reason}. Message scheduled for later (wait ${Math.floor(behaviorCheck.suggestedWaitMs! / 60000)} minutes)`
-                );
+            if (behaviorCheck.shouldWait && behaviorCheck.suggestedWaitMs) {
+                const cappedWaitMs = Math.min(behaviorCheck.suggestedWaitMs, 5 * 60 * 1000); // Cap at 5 minutes
+                logger.info({ sessionId: this.sessionId, waitMs: cappedWaitMs, reason: behaviorCheck.reason }, 'Delaying send for human behavior simulation');
+                await new Promise((resolve) => setTimeout(resolve, cappedWaitMs));
             }
 
             // 3. Random break simulation (5% chance)
@@ -379,10 +473,12 @@ export class WhatsAppClient {
         }
 
         // 5. Conversation score gating
+        // NOTE: contactCheck.isSaved is always false (Baileys can't reliably determine this).
+        // The conversation score is the sole trust signal for ban-risk assessment.
         const conversationScore = await getConversationScore(this.sessionId, recipient);
         const minScore = options?.minConversationScore !== undefined ? options.minConversationScore : 10;
-        if (!bypassChecks && conversationScore < minScore && !contactCheck.isSaved) {
-            const msg = `Low conversation score (${conversationScore}) with unsaved contact — HIGH BAN RISK`;
+        if (!bypassChecks && conversationScore < minScore) {
+            const msg = `Low conversation score (${conversationScore}) — HIGH BAN RISK`;
             logger.warn({ sessionId: this.sessionId, recipient, conversationScore }, msg);
             if (env.BLOCK_UNSAVED_CONTACTS) {
                 throw new Error(`${msg}. Score must be >=${minScore}. Set BLOCK_UNSAVED_CONTACTS=false to allow.`);
@@ -418,7 +514,9 @@ export class WhatsAppClient {
 
             const messageId = result?.key?.id || crypto.randomUUID();
 
-            await supabase.from('messages').insert({
+            // Use upsert to avoid duplicate rows when the MessageQueue worker
+            // pre-inserts a 'pending' record before calling client.sendMessage().
+            await supabase.from('messages').upsert({
                 id: messageId,
                 session_id: this.sessionId,
                 recipient,
@@ -429,7 +527,7 @@ export class WhatsAppClient {
                 media_filename: outbound.filename ?? null,
                 status: 'sent',
                 sent_at: new Date().toISOString(),
-            });
+            }, { onConflict: 'id' });
 
             logger.info({ messageId, sessionId: this.sessionId, recipient, type: outbound.type }, 'Message sent');
 
@@ -461,7 +559,8 @@ export class WhatsAppClient {
 
     // ─── Media Content Builder ────────────────────────────────────────────────
 
-    private async buildMessageContent(outbound: OutboundMessage): Promise<AnyMessageContent> {
+    /** @internal - Public for unit testing */
+    public async buildMessageContent(outbound: OutboundMessage): Promise<AnyMessageContent> {
         const { type } = outbound;
 
         if (type === 'text') {
@@ -469,12 +568,152 @@ export class WhatsAppClient {
             return { text: outbound.text };
         }
 
-        // For media types, get the binary buffer
-        const mediaBuffer = await this.resolveMedia(outbound);
+        // ── Rich Interactive Types ───────────────────────────────────────────
+
+        // Buttons — uses the new interactive message format (deprecated format no longer works)
+        if (type === 'button') {
+            if (!outbound.buttons || outbound.buttons.length === 0) throw new Error('buttons array is required for button messages');
+            return {
+                viewOnceMessage: {
+                    message: {
+                        interactiveMessage: {
+                            header: outbound.text ? { title: outbound.text, hasMediaAttachment: false } : undefined,
+                            body: { text: outbound.text || '' },
+                            footer: outbound.footer ? { text: outbound.footer } : undefined,
+                            nativeFlowMessage: {
+                                buttons: outbound.buttons.map((b) => ({
+                                    name: 'quick_reply',
+                                    buttonParamsJson: JSON.stringify({ display_text: b.text, id: b.id }),
+                                })),
+                            },
+                        },
+                    },
+                },
+            } as unknown as AnyMessageContent;
+        }
+
+        // Lists — uses the new interactive message format
+        if (type === 'list') {
+            if (!outbound.sections || outbound.sections.length === 0) throw new Error('sections array is required for list messages');
+            return {
+                viewOnceMessage: {
+                    message: {
+                        interactiveMessage: {
+                            header: outbound.listTitle ? { title: outbound.listTitle, hasMediaAttachment: false } : undefined,
+                            body: { text: outbound.text || '' },
+                            footer: outbound.footer ? { text: outbound.footer } : undefined,
+                            nativeFlowMessage: {
+                                buttons: [{
+                                    name: 'single_select',
+                                    buttonParamsJson: JSON.stringify({
+                                        title: outbound.buttonText || 'Menu',
+                                        sections: outbound.sections.map((s) => ({
+                                            title: s.title,
+                                            rows: s.rows.map((r) => ({
+                                                title: r.title,
+                                                id: r.id,
+                                                description: r.description || '',
+                                            })),
+                                        })),
+                                    }),
+                                }],
+                            },
+                        },
+                    },
+                },
+            } as unknown as AnyMessageContent;
+        }
+
+        if (type === 'poll') {
+            if (!outbound.pollQuestion) throw new Error('pollQuestion is required for poll messages');
+            if (!outbound.pollOptions || outbound.pollOptions.length < 2) throw new Error('pollOptions requires at least 2 options');
+            return {
+                poll: {
+                    name: outbound.pollQuestion,
+                    values: outbound.pollOptions,
+                    selectableCount: outbound.pollSelectCount ?? 0,
+                },
+            } as unknown as AnyMessageContent;
+        }
+
+        if (type === 'location') {
+            if (outbound.latitude === undefined || outbound.longitude === undefined) {
+                throw new Error('latitude and longitude are required for location messages');
+            }
+            return {
+                location: {
+                    degreesLatitude: outbound.latitude,
+                    degreesLongitude: outbound.longitude,
+                    name: outbound.locationName || '',
+                    address: outbound.locationAddress || '',
+                },
+            } as unknown as AnyMessageContent;
+        }
+
+        // Live location sharing
+        if (type === 'live_location') {
+            if (outbound.latitude === undefined || outbound.longitude === undefined) {
+                throw new Error('latitude and longitude are required for live_location messages');
+            }
+            return {
+                location: {
+                    degreesLatitude: outbound.latitude,
+                    degreesLongitude: outbound.longitude,
+                    name: outbound.locationName || '',
+                    address: outbound.locationAddress || '',
+                    accuracyInMeters: 10,
+                    isLive: true,
+                    caption: outbound.caption || '',
+                },
+            } as unknown as AnyMessageContent;
+        }
+
+        // Single contact card
+        if (type === 'contact') {
+            if (!outbound.contactName || !outbound.vcard) throw new Error('contactName and vcard are required for contact messages');
+            return {
+                contacts: {
+                    displayName: outbound.contactName,
+                    contacts: [{ vcard: outbound.vcard }],
+                },
+            } as unknown as AnyMessageContent;
+        }
+
+        // Contact list (multiple contacts)
+        if (type === 'contact_list') {
+            if (!outbound.vcards || outbound.vcards.length === 0) throw new Error('vcards array is required for contact_list messages');
+            const names = outbound.contactNames || [];
+            return {
+                contacts: {
+                    displayName: names[0] || 'Contacts',
+                    contacts: outbound.vcards.map((v, i) => ({ vcard: v, displayName: names[i] || '' })),
+                },
+            } as unknown as AnyMessageContent;
+        }
+
+        // Link preview message
+        if (type === 'link_preview') {
+            const url = outbound.previewUrl || outbound.text || '';
+            if (!url) throw new Error('previewUrl or text with a URL is required for link_preview messages');
+            return {
+                text: outbound.text || url,
+                linkPreview: {
+                    'canonical-url': url,
+                    title: outbound.previewTitle || '',
+                    description: outbound.previewDescription || '',
+                    matchedText: url,
+                },
+            } as unknown as AnyMessageContent;
+        }
+
+        // ── Standard Media Types ─────────────────────────────────────────────
+
+        // Resolve media — use URL passthrough for streaming when possible
+        const media = this.resolveMedia(outbound);
 
         if (type === 'image') {
             return {
-                image: mediaBuffer,
+                image: media,
                 mimetype: outbound.mediaMimetype || 'image/jpeg',
                 caption: outbound.caption ?? outbound.text ?? '',
             };
@@ -482,24 +721,53 @@ export class WhatsAppClient {
 
         if (type === 'video') {
             return {
-                video: mediaBuffer,
+                video: media,
                 mimetype: outbound.mediaMimetype || 'video/mp4',
                 caption: outbound.caption ?? outbound.text ?? '',
             };
         }
 
+        // Short video / PTV (Picture-in-Picture video note)
+        if (type === 'short_video') {
+            return {
+                video: media,
+                mimetype: outbound.mediaMimetype || 'video/mp4',
+                ptv: true,
+            } as unknown as AnyMessageContent;
+        }
+
+        // GIF — sent as a video with gifPlayback flag
+        if (type === 'gif') {
+            return {
+                video: media,
+                mimetype: outbound.mediaMimetype || 'video/mp4',
+                caption: outbound.caption ?? outbound.text ?? '',
+                gifPlayback: true,
+            };
+        }
+
+        // Audio file attachment (not voice note)
         if (type === 'audio') {
             return {
-                audio: mediaBuffer,
+                audio: media,
                 mimetype: outbound.mediaMimetype || 'audio/mpeg',
-                ptt: false,
+                ptt: outbound.ptt ?? false,
+            };
+        }
+
+        // Voice note (push-to-talk) — appears as voice bubble
+        if (type === 'voice') {
+            return {
+                audio: media,
+                mimetype: outbound.mediaMimetype || 'audio/ogg; codecs=opus',
+                ptt: true,
             };
         }
 
         if (type === 'document') {
             if (!outbound.filename) throw new Error('filename is required for document messages');
             return {
-                document: mediaBuffer,
+                document: media,
                 mimetype: outbound.mediaMimetype || 'application/octet-stream',
                 fileName: outbound.filename,
                 caption: outbound.caption ?? outbound.text ?? '',
@@ -508,7 +776,7 @@ export class WhatsAppClient {
 
         if (type === 'sticker') {
             return {
-                sticker: mediaBuffer,
+                sticker: media,
                 mimetype: outbound.mediaMimetype || 'image/webp',
             };
         }
@@ -517,15 +785,14 @@ export class WhatsAppClient {
     }
 
     /**
-     * Resolve media from either a URL or base64 string into a Buffer.
+     * Resolve media from either a URL or base64 string.
+     * For URLs, returns { url: string } which Baileys streams natively (no heap buffering).
+     * For base64, decodes to Buffer.
      */
-    private async resolveMedia(outbound: OutboundMessage): Promise<Buffer> {
+    private resolveMedia(outbound: OutboundMessage): { url: string } | Buffer {
         if (outbound.mediaUrl) {
-            const response = await axios.get<Buffer>(outbound.mediaUrl, {
-                responseType: 'arraybuffer',
-                timeout: 30000,
-            });
-            return Buffer.from(response.data);
+            // Pass URL directly to Baileys — it will stream-download internally
+            return { url: outbound.mediaUrl };
         }
 
         if (outbound.mediaBase64) {

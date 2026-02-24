@@ -128,12 +128,21 @@ export class SessionManager {
 
         const { decrypt } = await import('../utils/encryption.js');
 
+        // Build the owner payload ONCE — same format used by heartbeats
+        const ownerPayload = JSON.stringify({
+            pid: process.pid,
+            host: process.env.POD_HOST || 'localhost',
+            port: parseInt(process.env.PORT || '3000', 10),
+        });
+
         const restorePromises = sessions.map(async (session) => {
             try {
-                // Check if already owned by another process in the cluster
-                const owner = await redis.get(`session:owner:${session.id}`);
-                if (owner && owner !== process.pid.toString()) {
-                    logger.debug({ sessionId: session.id, owner }, 'Session owned by another process, skipping restoration');
+                // Atomically claim ownership BEFORE connecting.
+                // SET NX ensures only one pod wins in a multi-pod race.
+                const claimKey = `session:owner:${session.id}`;
+                const claimed = await redis.set(claimKey, ownerPayload, 'EX', 60, 'NX');
+                if (!claimed) {
+                    logger.debug({ sessionId: session.id }, 'Session claimed by another pod, skipping');
                     return;
                 }
 
@@ -153,11 +162,10 @@ export class SessionManager {
                 await client.connect();
                 this.sessions.set(session.id, client);
 
-                // Mark ownership
-                await redis.set(`session:owner:${session.id}`, process.pid.toString(), 'EX', 60);
-
                 logger.info({ sessionId: session.id }, 'Session restored');
             } catch (error) {
+                // Release our claim if connection failed so another pod can try
+                await redis.del(`session:owner:${session.id}`);
                 logger.error({ sessionId: session.id, error }, 'Failed to restore session');
             }
         });

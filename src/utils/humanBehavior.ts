@@ -1,17 +1,47 @@
 import { logger } from './logger.js';
 
+// ─── Timezone-Safe Hour Extraction ────────────────────────────────────────────
+
 /**
- * Simulate human sleep/work patterns to avoid 24/7 bot detection
- * Returns true if current time is "safe" for sending messages
+ * Extract the current hour in a specific timezone using Intl.DateTimeFormat.
+ * This is the ONLY correct way to get timezone-local hours in Node.js without
+ * a third-party library. The old `new Date(toLocaleString(...))` approach
+ * re-parses the locale string as local server time, giving wrong results
+ * when the server's TZ differs from the target TZ.
+ */
+function getHourInTimezone(timezone: string): number {
+    const formatter = new Intl.DateTimeFormat('en-US', {
+        timeZone: timezone,
+        hour: 'numeric',
+        hour12: false,
+    });
+    return parseInt(formatter.format(new Date()), 10);
+}
+
+function getDayInTimezone(timezone: string): number {
+    const formatter = new Intl.DateTimeFormat('en-US', {
+        timeZone: timezone,
+        weekday: 'short', // Sun, Mon, ...
+    });
+    const day = formatter.format(new Date());
+    const dayMap: Record<string, number> = { Sun: 0, Mon: 1, Tue: 2, Wed: 3, Thu: 4, Fri: 5, Sat: 6 };
+    return dayMap[day] ?? 0;
+}
+
+// ─── Active Time Check ───────────────────────────────────────────────────────
+
+/**
+ * Simulate human sleep/work patterns to avoid 24/7 bot detection.
+ * Returns true if current time is "safe" for sending messages.
+ *
+ * Only NIGHT HOURS (11 PM – 7 AM) are hard-blocked. Early morning and lunch
+ * periods are handled by longer contextual delays (getContextualDelay), not by
+ * random coin-flip rejections that cause noisy retries.
  */
 export function isHumanActiveTime(timezone: string = 'UTC'): { allowed: boolean; reason?: string } {
-    const now = new Date();
+    const localHour = getHourInTimezone(timezone);
 
-    // Get hour in specified timezone (default UTC, should be user's local timezone)
-    const localHour = new Date(now.toLocaleString('en-US', { timeZone: timezone })).getHours();
-
-    // NIGHT HOURS (11 PM - 7 AM) - DO NOT SEND
-    // Humans don't typically send business messages during sleep hours
+    // NIGHT HOURS (11 PM - 7 AM) — hard block
     if (localHour >= 23 || localHour < 7) {
         return {
             allowed: false,
@@ -19,71 +49,46 @@ export function isHumanActiveTime(timezone: string = 'UTC'): { allowed: boolean;
         };
     }
 
-    // EARLY MORNING (7 AM - 9 AM) - REDUCED ACTIVITY
-    // Light usage acceptable but reduced
-    if (localHour >= 7 && localHour < 9) {
-        // 50% chance to delay for more human-like pattern
-        if (Math.random() < 0.5) {
-            return {
-                allowed: false,
-                reason: 'Early morning - simulating reduced activity',
-            };
-        }
-    }
-
-    // LUNCH BREAK (12 PM - 2 PM) - REDUCED ACTIVITY
-    if (localHour >= 12 && localHour < 14) {
-        // 30% chance to delay
-        if (Math.random() < 0.3) {
-            return {
-                allowed: false,
-                reason: 'Lunch hours - simulating break time',
-            };
-        }
-    }
-
-    // WORK HOURS (9 AM - 6 PM) - OPTIMAL TIME
-    // Best time for business messaging
-
-    // EVENING (6 PM - 11 PM) - MODERATE ACTIVITY
-    // Acceptable but slightly reduced
-
+    // All other hours are allowed.
+    // Early morning (7-9) and lunch (12-14) get longer delays via getContextualDelay()
+    // instead of random allow/reject coin flips.
     return { allowed: true };
 }
+
+// ─── Weekend Check ───────────────────────────────────────────────────────────
 
 /**
  * Check if it's a weekend (many businesses don't operate on weekends)
  */
 export function isWeekend(timezone: string = 'UTC'): boolean {
-    const now = new Date();
-    const localDay = new Date(now.toLocaleString('en-US', { timeZone: timezone })).getDay();
+    const localDay = getDayInTimezone(timezone);
     return localDay === 0 || localDay === 6; // Sunday = 0, Saturday = 6
 }
 
+// ─── Contextual Delay ────────────────────────────────────────────────────────
+
 /**
- * Get random delay that varies by time of day
- * Morning: longer delays (less activity)
- * Midday: medium delays
- * Evening: longer delays
+ * Get random delay that varies by time of day.
+ * Morning/evening: longer delays (less activity)
+ * Midday: shorter delays (peak activity)
  */
 export function getContextualDelay(timezone: string = 'UTC'): number {
-    const now = new Date();
-    const localHour = new Date(now.toLocaleString('en-US', { timeZone: timezone })).getHours();
+    const localHour = getHourInTimezone(timezone);
 
     let minDelay: number;
     let maxDelay: number;
 
-    // Peak hours (10 AM - 4 PM) - faster responses
+    // Peak hours (10 AM - 4 PM) — faster responses
     if (localHour >= 10 && localHour < 16) {
         minDelay = 3000;
         maxDelay = 10000;
     }
-    // Early morning / Late evening - slower, more deliberate
+    // Early morning (7-10) / Late evening (20-23) — slower, more deliberate
     else if ((localHour >= 7 && localHour < 10) || (localHour >= 20 && localHour < 23)) {
         minDelay = 15000;
         maxDelay = 45000;
     }
-    // Normal business hours
+    // Normal business hours (4 PM - 8 PM)
     else {
         minDelay = 8000;
         maxDelay = 25000;
@@ -92,8 +97,11 @@ export function getContextualDelay(timezone: string = 'UTC'): number {
     return Math.floor(Math.random() * (maxDelay - minDelay + 1)) + minDelay;
 }
 
+// ─── Combined Check ──────────────────────────────────────────────────────────
+
 /**
- * Comprehensive check combining all human behavior heuristics
+ * Comprehensive check combining all human behavior heuristics.
+ * Calculates the wait time using timezone-safe arithmetic.
  */
 export function shouldDelayForHumanBehavior(
     timezone: string = 'UTC',
@@ -101,44 +109,51 @@ export function shouldDelayForHumanBehavior(
 ): { shouldWait: boolean; reason?: string; suggestedWaitMs?: number } {
     // Check if it's weekend and business wants to respect weekends
     if (respectWeekends && isWeekend(timezone)) {
-        const now = new Date();
-        const monday = new Date(now);
-        monday.setDate(now.getDate() + ((1 + 7 - now.getDay()) % 7 || 7));
-        monday.setHours(9, 0, 0, 0);
+        // Calculate hours until Monday 9 AM in the target timezone
+        const localDay = getDayInTimezone(timezone);
+        const localHour = getHourInTimezone(timezone);
+
+        // Days until Monday: Sunday(0) → 1 day, Saturday(6) → 2 days
+        const daysUntilMonday = localDay === 0 ? 1 : (8 - localDay) % 7;
+        const hoursUntilMonday9AM = (daysUntilMonday * 24) + (9 - localHour);
+        const waitMs = Math.max(0, hoursUntilMonday9AM * 60 * 60 * 1000);
 
         return {
             shouldWait: true,
             reason: 'Weekend - waiting for business hours',
-            suggestedWaitMs: monday.getTime() - now.getTime(),
+            suggestedWaitMs: waitMs,
         };
     }
 
     // Check active hours
     const activeCheck = isHumanActiveTime(timezone);
     if (!activeCheck.allowed) {
-        // Wait until 9 AM next day
-        const now = new Date();
-        const nextActive = new Date(now.toLocaleString('en-US', { timeZone: timezone }));
-        nextActive.setHours(9, 0, 0, 0);
+        // Calculate hours until 9 AM in the target timezone
+        const localHour = getHourInTimezone(timezone);
 
-        // If it's already past 9 AM today, schedule for tomorrow
-        if (nextActive <= now) {
-            nextActive.setDate(nextActive.getDate() + 1);
-        }
+        // If hour >= 23, wait (24 - localHour + 9) hours
+        // If hour < 7, wait (9 - localHour) hours
+        const hoursUntil9AM = localHour >= 23
+            ? (24 - localHour) + 9
+            : 9 - localHour;
+
+        const waitMs = Math.max(0, hoursUntil9AM * 60 * 60 * 1000);
 
         return {
             shouldWait: true,
             reason: activeCheck.reason,
-            suggestedWaitMs: nextActive.getTime() - now.getTime(),
+            suggestedWaitMs: waitMs,
         };
     }
 
     return { shouldWait: false };
 }
 
+// ─── Random Break Simulation ─────────────────────────────────────────────────
+
 /**
- * Random "break time" simulation
- * Returns true if bot should take a random break (simulates human getting distracted)
+ * Random "break time" simulation.
+ * Returns true if bot should take a random break (simulates human getting distracted).
  */
 export function shouldTakeRandomBreak(breakProbability: number = 0.05): { takeBreak: boolean; breakDurationMs?: number } {
     if (Math.random() < breakProbability) {

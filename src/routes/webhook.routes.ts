@@ -2,6 +2,7 @@ import { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import { supabase } from '../config/supabase.js';
 import { logger } from '../utils/logger.js';
+import { invalidateWebhookCache } from '../services/WebhookDispatcher.js';
 
 const createWebhookSchema = z.object({
     sessionId: z.string().min(1).optional().nullable(),
@@ -62,6 +63,7 @@ export async function webhookRoutes(fastify: FastifyInstance): Promise<void> {
             }
 
             logger.info({ webhookId: data.id, url: body.url }, 'Webhook registered');
+            await invalidateWebhookCache(body.sessionId ?? undefined);
             return reply.status(201).send(data);
         } catch (err) {
             if (err instanceof z.ZodError) {
@@ -140,6 +142,7 @@ export async function webhookRoutes(fastify: FastifyInstance): Promise<void> {
                 return reply.status(404).send({ error: 'Not Found', message: 'Webhook not found' });
             }
 
+            await invalidateWebhookCache();
             return reply.send(data);
         } catch (err) {
             if (err instanceof z.ZodError) {
@@ -162,6 +165,7 @@ export async function webhookRoutes(fastify: FastifyInstance): Promise<void> {
             return reply.status(500).send({ error: 'Database Error', message: error.message });
         }
 
+        await invalidateWebhookCache();
         return reply.send({ message: 'Webhook deleted successfully' });
     });
 

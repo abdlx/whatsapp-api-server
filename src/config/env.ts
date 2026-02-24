@@ -38,6 +38,13 @@ const envSchema = z.object({
     // Set to this pod's internal hostname/IP so the session router can proxy
     // requests to the correct instance when running multiple pods.
     POD_HOST: z.string().default('localhost'),
+
+    // Proxy safety
+    // Set to false in production to BLOCK sessions that fail to get a proxy
+    ALLOW_DIRECT_CONNECTION: z.coerce.boolean().default(true),
+
+    // Media storage
+    MEDIA_BUCKET: z.string().default('whatsapp-media'),
 });
 
 export const env = envSchema.parse(process.env);

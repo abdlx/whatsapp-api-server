@@ -33,12 +33,25 @@ export class HealthMonitor {
     private async runHealthChecks(): Promise<void> {
         const { data: sessions } = await supabase
             .from('sessions')
-            .select('id, agent_name, status')
+            .select('id, agent_name, status, daily_count_reset_at')
             .eq('status', 'active');
 
         if (!sessions || sessions.length === 0) return;
 
+        const today = new Date().toISOString().slice(0, 10);
+
         await Promise.allSettled(sessions.map(async (session) => {
+            // Reset daily message counter if it hasn't been reset today
+            const lastReset = session.daily_count_reset_at
+                ? new Date(session.daily_count_reset_at).toISOString().slice(0, 10)
+                : null;
+            if (!lastReset || lastReset < today) {
+                await supabase.from('sessions')
+                    .update({ daily_message_count: 0, daily_count_reset_at: new Date().toISOString() })
+                    .eq('id', session.id);
+                logger.info({ sessionId: session.id }, 'Daily message counter reset');
+            }
+
             const client = await sessionManager.getSession(session.id);
 
             if (!client || client.connectionState !== 'open') {

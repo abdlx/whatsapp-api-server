@@ -117,6 +117,41 @@ webhookWorker.on('failed', async (job, error) => {
         .eq('id', job.data.logId);
 });
 
+// ─── Webhook Cache ───────────────────────────────────────────────────────────
+
+const WEBHOOK_CACHE_TTL = 30; // seconds
+
+async function getCachedWebhooks(sessionId: string): Promise<{ id: string; url: string; secret: string | null; events: string | null }[]> {
+    const cacheKey = `webhooks:config:${sessionId}`;
+    const cached = await redis.get(cacheKey);
+    if (cached) return JSON.parse(cached);
+
+    // Cache miss — fetch from DB and cache
+    const { data: webhooks } = await supabase
+        .from('webhooks')
+        .select('id, url, secret, events')
+        .or(`session_id.eq.${sessionId},session_id.is.null`)
+        .eq('is_active', true);
+
+    const result = webhooks || [];
+    await redis.set(cacheKey, JSON.stringify(result), 'EX', WEBHOOK_CACHE_TTL);
+    return result;
+}
+
+/**
+ * Invalidate the webhook config cache for a session (or all sessions).
+ * Call this from webhook CRUD routes after any create/update/delete.
+ */
+export async function invalidateWebhookCache(sessionId?: string): Promise<void> {
+    if (sessionId) {
+        await redis.del(`webhooks:config:${sessionId}`);
+    } else {
+        // Invalidate all webhook caches (pattern scan)
+        const keys = await redis.keys('webhooks:config:*');
+        if (keys.length > 0) await redis.del(...keys);
+    }
+}
+
 // ─── Dispatch Helper ─────────────────────────────────────────────────────────
 
 /**
@@ -125,14 +160,10 @@ webhookWorker.on('failed', async (job, error) => {
  */
 export async function dispatchWebhookEvent(payload: WebhookPayload): Promise<void> {
     try {
-        // Look up all active webhooks for this session (or global webhooks with no session_id)
-        const { data: webhooks } = await supabase
-            .from('webhooks')
-            .select('id, url, secret, events')
-            .or(`session_id.eq.${payload.sessionId},session_id.is.null`)
-            .eq('is_active', true);
+        // Look up webhooks from Redis cache (falls back to DB on cache miss)
+        const webhooks = await getCachedWebhooks(payload.sessionId);
 
-        if (!webhooks || webhooks.length === 0) return;
+        if (webhooks.length === 0) return;
 
         for (const webhook of webhooks) {
             // Filter by event if the webhook specifies a subscription list

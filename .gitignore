@@ -3,4 +3,5 @@ dist/
 sessions/
 logs/
 .env
+.env.test
 *.log
