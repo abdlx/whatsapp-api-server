@@ -21,16 +21,34 @@ Never miss an event. Our webhook system uses **BullMQ** with exponential backoff
 - **Filtering**: Register webhooks for specific events or sessions.
 
 ### 🖼️ Rich Media & Message Types
-Full support for all WhatsApp message types:
-- **Text**, **Image**, **Video**, **Audio**, **Document**, and **Sticker**.
-- Supports sending via **Public URL** or **Base64** data.
-- Handles automated media processing and optimized uploads.
+Full support for modern WhatsApp message formats:
+- **Rich Media**: Voice Notes (PTT/OGG), Auto-looping GIFs, Short Round Videos (PTV), Audio, Image, Document, and Sticker.
+- **Modern Interactive Messages**: Native Flow buttons, lists, and poll messages (replacing deprecated formats).
+- **Extras**: Customizable Link Previews, Live Locations, and Multi-Contact VCFs.
+
+### 💬 Chat & Message Management
+Complete control over the WhatsApp experience:
+- **Message Actions**: Mark as read (blue ticks), React with emojis, Forward, Delete (for me/everyone), Star, and Pin.
+- **Chat Management**: List chats, get metadata, Archive/Unarchive, Delete, Pin, and Mute chats.
+
+### 🏢 Business Management Modules
+Advanced routes for comprehensive CRM integration:
+- **Groups**: Create groups, manage participants (Promote/Demote), update settings (Announce/Locked), and manage invite links (Generate/Join/Revoke).
+- **Contacts**: Bulk phone number verification with a **persistent Supabase cache** to minimize rate limits and speed up checks.
+- **Presence**: Set online/offline status, and send real-time "typing..." or "recording..." indicators.
+- **Blacklist**: Per-session contact block/unblock with local DB synchronization.
+- **Newsletters & Stories**: Create/Follow Channels and post text or media Status updates to `status@broadcast`.
 
 ### 🌐 Distributed Architecture
 Built for scale:
 - **Multi-Instance Routing**: Transparently proxies API requests to the specific server pod holding an active session.
 - **Redis Heartbeats**: Real-time ownership tracking for cluster health.
 - **State Persistence**: Distributed authentication state in Redis with encrypted session backups in Supabase.
+
+### 🧪 Test Infrastructure
+Professional testing foundation:
+- **Vitest & Supertest**: High-performance unit and integration testing suite.
+- **Service Mocks**: Built-in mocks for Supabase, Redis, and BullMQ to test API routing and validation instantly without needing live connections.
 
 ---
 
@@ -51,12 +69,16 @@ cp .env.example .env
 Key requirements:
 - **Supabase**: URL and Service Role Key for database & session storage.
 - **Redis**: For job queues and authentication state.
-- **API_KEY**: A 32+ character secret for securing your API endpoints.
+- **API_KEY**: A 32+ character secret for securing your API endpoints (also used as the key derivation source for session encryption).
 
 ### 3. Run the Server
 ```bash
 # Development
 npm run dev
+
+# Run Tests
+npm run test
+npm run test:coverage
 
 # Production Build
 npm run build
@@ -99,6 +121,7 @@ curl -X POST http://localhost:3000/webhooks \
 - **Database**: [Supabase](https://supabase.com/) (PostgreSQL)
 - **Cache/Queue**: [Redis](https://redis.io/) (BullMQ)
 - **Validation**: [Zod](https://zod.dev/)
+- **Testing**: [Vitest](https://vitest.dev/) & Supertest
 
 ---
 
