@@ -34,16 +34,14 @@ export async function verifyContact(
             return { exists: false, isSaved: false, isBlocked: false };
         }
 
-        // Check if contact is in your phone's contact list
-        // This is a heuristic - if you've chatted before, they're likely saved
-        const contactStatus = await socket.fetchStatus(jid).catch(() => null);
-        const isSaved = contactStatus !== null; // If you can fetch status, usually means mutual contact
-
-        // Cache the result for 7 days
+        // We can't reliably determine if the contact is saved via the WA protocol.
+        // Instead, we conservatively mark as unsaved and let the conversation
+        // history score (in WhatsAppClient) be the primary trust signal.
+        // This avoids false-positives from fetchStatus privacy settings.
         const result: ContactCheck = {
             exists: true,
-            isSaved,
-            isBlocked: false, // Note: Baileys can't reliably detect if you're blocked
+            isSaved: false, // Conservative default — conversation score is the real gate
+            isBlocked: false,
         };
 
         await redis.set(cacheKey, JSON.stringify(result), 'EX', 604800); // 7 days

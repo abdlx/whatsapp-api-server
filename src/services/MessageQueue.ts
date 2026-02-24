@@ -1,29 +1,28 @@
 import { Queue, Worker, Job } from 'bullmq';
-
 import { redis } from '../config/redis.js';
 import { sessionManager } from '../core/SessionManager.js';
 import { supabase } from '../config/supabase.js';
 import { logger } from '../utils/logger.js';
+import { OutboundMessage, SendOptions } from '../core/WhatsAppClient.js';
+
+// ─── Job Interface ────────────────────────────────────────────────────────────
 
 interface MessageJob {
     sessionId: string;
     recipient: string;
-    message: string;
+    outbound: OutboundMessage;
     messageId?: string;
-    options?: {
-        timezone?: string;
-        respectWeekends?: boolean;
-        minConversationScore?: number;
-        bypassChecks?: boolean;
-    };
+    options?: SendOptions;
 }
 
 const QUEUE_NAME = 'whatsapp-messages';
 
+// ─── Queue ────────────────────────────────────────────────────────────────────
+
 export const messageQueue = new Queue<MessageJob>(QUEUE_NAME, {
     connection: redis,
     defaultJobOptions: {
-        attempts: 10, // Increased attempts for behavior-based retries
+        attempts: 10,
         backoff: {
             type: 'exponential',
             delay: 10000,
@@ -33,12 +32,14 @@ export const messageQueue = new Queue<MessageJob>(QUEUE_NAME, {
     },
 });
 
+// ─── Worker ───────────────────────────────────────────────────────────────────
+
 export const messageWorker = new Worker<MessageJob>(
     QUEUE_NAME,
     async (job: Job<MessageJob>) => {
-        const { sessionId, recipient, message, messageId, options } = job.data;
+        const { sessionId, recipient, outbound, messageId, options } = job.data;
 
-        logger.info({ jobId: job.id, sessionId, recipient }, 'Processing message job');
+        logger.info({ jobId: job.id, sessionId, recipient, type: outbound.type }, 'Processing message job');
 
         const client = await sessionManager.getSession(sessionId);
         if (!client) {
@@ -50,9 +51,8 @@ export const messageWorker = new Worker<MessageJob>(
         }
 
         try {
-            const sentMessageId = await client.sendMessageWithTyping(recipient, message, options);
+            const sentMessageId = await client.sendMessage(recipient, outbound, options);
 
-            // Update message record if we have an existing ID
             if (messageId) {
                 await supabase
                     .from('messages')
@@ -61,26 +61,22 @@ export const messageWorker = new Worker<MessageJob>(
             }
 
             logger.info({ jobId: job.id, messageId: sentMessageId }, 'Message sent successfully');
-
             return { messageId: sentMessageId };
         } catch (error: any) {
-            // Check for human behavior delays (Active Hours / Weekend checks)
-            if (error.message.includes('scheduled for later')) {
-                logger.info(
-                    { jobId: job.id, reason: error.message },
-                    'Message scheduled for retry due to human behavior patterns'
-                );
+            // Human behavior delays are expected — log and let BullMQ retry
+            if (error.message?.includes('scheduled for later')) {
+                logger.info({ jobId: job.id, reason: error.message }, 'Message rescheduled due to human behavior patterns');
             }
-
             throw error;
         }
-
     },
     {
         connection: redis,
-        concurrency: 1, // Process one message at a time for anti-ban
+        concurrency: 1, // Process one message at a time per session for anti-ban safety
     }
 );
+
+// ─── Worker Event Handlers ────────────────────────────────────────────────────
 
 messageWorker.on('completed', (job) => {
     logger.debug({ jobId: job.id }, 'Message job completed');
@@ -88,11 +84,8 @@ messageWorker.on('completed', (job) => {
 
 messageWorker.on('failed', async (job, error) => {
     if (!job) return;
-
     logger.error({ jobId: job.id, error: error.message }, 'Message job failed');
 
-
-    // Update message status to failed
     if (job.data.messageId) {
         await supabase
             .from('messages')
@@ -101,34 +94,38 @@ messageWorker.on('failed', async (job, error) => {
     }
 });
 
+// ─── Queue Helper ─────────────────────────────────────────────────────────────
+
 export async function addMessageToQueue(
     sessionId: string,
     recipient: string,
-    message: string,
-    options?: MessageJob['options']
+    outbound: OutboundMessage,
+    options?: SendOptions
 ): Promise<string> {
     const messageId = crypto.randomUUID();
 
-    // Create pending message record
+    // Create pending record in DB (audit trail before any send attempt)
     await supabase.from('messages').insert({
         id: messageId,
         session_id: sessionId,
         recipient,
-        content: message,
+        content: outbound.text ?? outbound.caption ?? `[${outbound.type}]`,
+        message_type: outbound.type,
+        media_url: outbound.mediaUrl ?? null,
+        media_mimetype: outbound.mediaMimetype ?? null,
+        media_filename: outbound.filename ?? null,
         status: 'pending',
     });
 
-    // Add to queue
     await messageQueue.add('send-message', {
         sessionId,
         recipient,
-        message,
+        outbound,
         messageId,
         options,
     });
 
-    logger.info({ messageId, sessionId, recipient }, 'Message added to queue');
+    logger.info({ messageId, sessionId, recipient, type: outbound.type }, 'Message added to queue');
 
     return messageId;
 }
-

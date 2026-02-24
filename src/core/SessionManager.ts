@@ -13,10 +13,19 @@ export class SessionManager {
      */
     startHeartbeats() {
         if (this.heartbeatInterval) return;
+
+        // Advertise this pod's identity (pid + network address) so the session
+        // router middleware can proxy requests to the correct instance.
+        const ownerPayload = JSON.stringify({
+            pid: process.pid,
+            host: process.env.POD_HOST || 'localhost',
+            port: parseInt(process.env.PORT || '3000', 10),
+        });
+
         this.heartbeatInterval = setInterval(async () => {
             const pipeline = redis.pipeline();
             for (const sessionId of this.sessions.keys()) {
-                pipeline.set(`session:owner:${sessionId}`, process.pid.toString(), 'EX', 60);
+                pipeline.set(`session:owner:${sessionId}`, ownerPayload, 'EX', 60);
             }
             await pipeline.exec();
         }, 30000);

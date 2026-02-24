@@ -32,8 +32,9 @@ export async function getAccountRiskProfile(sessionId: string): Promise<AccountR
     const connectedAt = new Date(session.connected_at || session.created_at);
     const ageInDays = (Date.now() - connectedAt.getTime()) / (1000 * 60 * 60 * 24);
 
-    // Get hourly message count from Redis
-    const hourKey = `messages:hour:${sessionId}:${new Date().getHours()}`;
+    // Get hourly message count from Redis (date-scoped so limits reset per calendar day)
+    const dateStr = new Date().toISOString().slice(0, 10); // YYYY-MM-DD
+    const hourKey = `messages:hour:${sessionId}:${dateStr}:${new Date().getHours()}`;
     const messagesSentThisHour = parseInt((await redis.get(hourKey)) || '0');
     const messagesSentToday = session.daily_message_count || 0;
 
@@ -136,11 +137,12 @@ export async function canSendMessage(sessionId: string): Promise<{ allowed: bool
  * Increment hourly message counter
  */
 export async function incrementHourlyCounter(sessionId: string): Promise<void> {
+    const dateStr = new Date().toISOString().slice(0, 10); // YYYY-MM-DD
     const hour = new Date().getHours();
-    const hourKey = `messages:hour:${sessionId}:${hour}`;
+    const hourKey = `messages:hour:${sessionId}:${dateStr}:${hour}`;
 
     await redis.incr(hourKey);
-    await redis.expire(hourKey, 3600); // Expire after 1 hour
+    await redis.expire(hourKey, 7200); // Expire after 2 hours (gives a buffer window)
 }
 
 /**

@@ -33,6 +33,11 @@ const envSchema = z.object({
 
     // Monitoring
     ALERT_WEBHOOK_URL: z.string().optional(),
+
+    // Multi-instance networking
+    // Set to this pod's internal hostname/IP so the session router can proxy
+    // requests to the correct instance when running multiple pods.
+    POD_HOST: z.string().default('localhost'),
 });
 
 export const env = envSchema.parse(process.env);

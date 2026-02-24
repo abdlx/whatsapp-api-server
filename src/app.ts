@@ -1,100 +1,148 @@
 import Fastify from 'fastify';
+import swagger from '@fastify/swagger';
+import swaggerUi from '@fastify/swagger-ui';
+import cors from '@fastify/cors';
 import { env } from './config/env.js';
 import { logger } from './utils/logger.js';
 import { redis } from './config/redis.js';
 import { sessionManager } from './core/SessionManager.js';
 import { healthMonitor } from './services/HealthMonitor.js';
 import { messageWorker } from './services/MessageQueue.js';
+import { webhookWorker } from './services/WebhookDispatcher.js';
 import { sessionRoutes } from './routes/session.routes.js';
 import { messageRoutes } from './routes/message.routes.js';
+import { webhookRoutes } from './routes/webhook.routes.js';
 import { authMiddleware, ipWhitelistMiddleware } from './middleware/auth.js';
 import { globalRateLimiter } from './middleware/rateLimit.js';
-import cors from '@fastify/cors';
+import { sessionRouterMiddleware } from './middleware/sessionRouter.js';
+
+// ─── Server ─────────────────────────────────────────────────────────────────
 
 const fastify = Fastify({
     logger: false, // Using custom pino logger
     trustProxy: true,
 });
 
-// Register CORS
-fastify.register(cors, {
-    origin: true, // Allow all origins for the dashboard
-    methods: ['GET', 'POST', 'DELETE', 'OPTIONS'],
+// ─── Swagger API Documentation ───────────────────────────────────────────────
+
+await fastify.register(swagger, {
+    openapi: {
+        openapi: '3.0.0',
+        info: {
+            title: 'WhatsApp API Server',
+            description: 'Production-grade WhatsApp API server powered by Baileys — featuring anti-ban protection, rich media, webhooks, and multi-instance support.',
+            version: '2.0.0',
+        },
+        tags: [
+            { name: 'Sessions', description: 'Manage WhatsApp sessions' },
+            { name: 'Messages', description: 'Send and track messages' },
+            { name: 'Webhooks', description: 'Register and manage webhook endpoints' },
+        ],
+        components: {
+            securitySchemes: {
+                apiKey: {
+                    type: 'apiKey',
+                    in: 'header',
+                    name: 'x-api-key',
+                },
+            },
+        },
+        security: [{ apiKey: [] }],
+    },
 });
 
-// Register middleware
+await fastify.register(swaggerUi, {
+    routePrefix: '/docs',
+    uiConfig: {
+        docExpansion: 'list',
+        deepLinking: true,
+    },
+    staticCSP: true,
+});
+
+// ─── CORS ────────────────────────────────────────────────────────────────────
+
+fastify.register(cors, {
+    origin: true,
+    methods: ['GET', 'POST', 'PATCH', 'DELETE', 'OPTIONS'],
+});
+
+// ─── Auth & Security Middleware ───────────────────────────────────────────────
+
 fastify.addHook('onRequest', async (request, reply) => {
-    // Skip auth and rate limiting for health check and root
     const path = request.url.split('?')[0];
-    if (path === '/health' || path === '/' || path === '/health/') {
+
+    // Public endpoints — skip auth, rate limiting
+    if (path === '/health' || path === '/' || path === '/docs' || path.startsWith('/docs/')) {
         return;
     }
 
     await authMiddleware(request, reply);
+    if (reply.sent) return; // Short-circuit if auth rejected
+
     await ipWhitelistMiddleware(request, reply);
+    if (reply.sent) return;
+
     await globalRateLimiter(request, reply);
+    if (reply.sent) return;
+
+    // Multi-instance session routing (proxies to the owning pod if needed)
+    await sessionRouterMiddleware(request, reply);
 });
 
-// Root route for simple verification
-fastify.get('/', async () => {
-    return {
-        status: 'ok',
-        message: 'WhatsApp API Server is running',
-        version: '1.0.0',
-        documentation: 'https://github.com/abdlx/whatsapp-api-server'
-    };
-});
+// ─── Routes ──────────────────────────────────────────────────────────────────
 
-// Health check endpoint
-fastify.get('/health', async (_request, reply) => {
-    return reply.send({
-        status: 'ok',
-        uptime: process.uptime(),
-        activeSessions: sessionManager.getActiveSessionCount(),
-        timestamp: new Date().toISOString(),
-    });
-});
+// Root info endpoint
+fastify.get('/', {
+    schema: { hide: true } as object,
+}, async () => ({
+    status: 'ok',
+    message: 'WhatsApp API Server is running',
+    version: '2.0.0',
+    documentation: '/docs',
+}));
 
+// Health check (public)
+fastify.get('/health', {
+    schema: { hide: true } as object,
+}, async (_request, reply) => reply.send({
+    status: 'ok',
+    uptime: process.uptime(),
+    activeSessions: sessionManager.getActiveSessionCount(),
+    timestamp: new Date().toISOString(),
+}));
 
-// Register routes
 fastify.register(sessionRoutes);
 fastify.register(messageRoutes);
+fastify.register(webhookRoutes);
 
-// Custom 404 handler for debugging
+// 404 handler
 fastify.setNotFoundHandler((request, reply) => {
-    logger.warn({
-        url: request.url,
-        method: request.method,
-        headers: request.headers,
-    }, '404 Not Found - Route not matched');
-
+    logger.warn({ url: request.url, method: request.method }, '404 Not Found');
     return reply.status(404).send({
         error: 'Not Found',
-        message: `Route ${request.method}:${request.url} not found on WhatsApp API Server`,
+        message: `Route ${request.method}:${request.url} not found`,
         timestamp: new Date().toISOString(),
     });
 });
 
-// Graceful shutdown handler
+// ─── Graceful Shutdown ────────────────────────────────────────────────────────
+
 async function gracefulShutdown(signal: string): Promise<void> {
     logger.info({ signal }, 'Received shutdown signal');
 
-    // Stop accepting new requests
     await fastify.close();
     logger.info('HTTP server closed');
 
-    // Stop health monitor
     healthMonitor.stop();
 
-    // Stop message worker
     await messageWorker.close();
-    logger.info('Message worker stopped');
+    await webhookWorker.close();
+    logger.info('Workers stopped');
 
-    // Disconnect all WhatsApp sessions
     await sessionManager.disconnectAll();
     logger.info('WhatsApp sessions disconnected');
 
-    // Close Redis
     await redis.quit();
     logger.info('Redis connection closed');
 
@@ -104,37 +152,25 @@ async function gracefulShutdown(signal: string): Promise<void> {
 process.on('SIGTERM', () => gracefulShutdown('SIGTERM'));
 process.on('SIGINT', () => gracefulShutdown('SIGINT'));
 
-// Start server
+// ─── Start ────────────────────────────────────────────────────────────────────
+
 async function start(): Promise<void> {
     try {
-        logger.info('Initializing WhatsApp API Server...');
+        logger.info('Initializing WhatsApp API Server v2...');
 
-        // Restore existing sessions
         await sessionManager.restoreAllSessions();
         logger.info('Sessions restored');
 
-        // Start health monitor
         healthMonitor.start();
 
-        // Register routes (these are fastify.register calls)
-        logger.info('Registering routes...');
-
-        // Wait for all plugins/routes to be registered
         await fastify.ready();
-        logger.info('Fastify ready (all plugins registered)');
+        logger.info('Fastify ready — Swagger docs available at /docs');
 
-        // Start HTTP server
         const port = env.PORT || 3000;
-        const host = '0.0.0.0'; // MUST be 0.0.0.0 for Docker/Coolify
-
-        logger.info({ port, host }, 'Attempting to start HTTP server...');
+        const host = '0.0.0.0';
 
         const address = await fastify.listen({ port, host });
-        logger.info({ address, env: env.NODE_ENV, port, host }, 'WhatsApp API Server started and listening');
-
-        // Print all registered routes for debugging
-        logger.info('Registered routes:');
-        console.log(fastify.printRoutes());
+        logger.info({ address, env: env.NODE_ENV, port }, 'WhatsApp API Server v2 started');
     } catch (err) {
         logger.error({ err }, 'Failed to start server');
         process.exit(1);
